@@ -123,6 +123,9 @@ class UnitreeTop:
             h.push("ram", self.stats.get("mem", {}).get("percent", 0.0))
             for i, g in enumerate(self.gpu):
                 h.push("gpu{}".format(i), g["load"])
+            for name, n in self.stats.get("net", {}).items():
+                h.push("rx:" + name, n["rx"])
+                h.push("tx:" + name, n["tx"])
             pw = self.gpu_stats.get("power", {})
             if pw:
                 h.push("board_power", pw.get("total", 0.0))

@@ -4,18 +4,11 @@
 （Go2 / Go2-W / B2 / B2-W / H1 / G1 / H1-2）。除了 CPU、GPU、内存、温度、功耗这些常规指标，还通过
 `unitree_sdk2py`（CycloneDDS）实时显示机器人状态：关节、电池 BMS、IMU、足端力、遥控器、运动状态。
 
-```
- unitreetop  corelab-go2-1 │ Go2 ONLINE │ BAT 64% 29.2V -1.9A │ hottest RR_hip 43°C          CPU 33%  up 02:41:10
-  1 [|||||||||    29% 2.0G]  5 [||||        13%]    Robot Go2 [online] rt/lowstate 500Hz
-  ...                                               BAT  [||||||||||||||||||||||||||||         64%]
- Mem  [|||||||||||                 2.5GB/15.0GB]         29.21V -1.92A 56.2W discharging
- GPU  [                               0% 306MHz]    Roll    +0.87° [              │█             ]
- Board 8.3W  CPU 63°  GPU 59°  ...                  Pitch   -5.89° [          ████│              ]
-  # joint             q[rad]      dq     tau  T°C                     tau
-  0 FR_hip            -0.118   +0.03   -0.22   37 [                 ██│                 ]
-  ...
- 1ALL  2CPU  3GPU  4MEM  5JOINTS  6IMU  7POWER  8INFO                              p:pause q:quit
-```
+界面风格参照 [btop](https://github.com/aristocratos/btop)：圆角面板、`¹cpu` 式上标快捷键、`■` 渐变条、braille 点阵曲线，配色使用 btop 默认主题。
+下图为 Go2 真机画面（终端截图转 PNG）：
+
+![all](docs/screenshot-all.png)
+![joints](docs/screenshot-joints.png)
 
 ## 安装
 
@@ -53,6 +46,8 @@ unitreetop -d 1 -i lo            # 连接 unitree_mujoco 仿真（domain 1）
 | `-p/--page` | 启动页面：`all cpu gpu mem joints imu power info` |
 | `--no-robot` | 只看主机 |
 
+终端需要支持 256 色（`TERM=xterm-256color` 等，现代终端和 tmux 基本都满足），否则自动降级为 8 色。
+
 按键：`1`–`8` 或 `←/→/Tab` 切换页面（也可以鼠标点击底部标签），`+`/`-` 调节当前页刷新率，`p` 暂停，`q` 退出；JOINTS 页 `↑↓` 选关节（下方曲线显示该关节 q/dq/tau 的历史），`a` 显示未使用的电机槽位；CPU 页 `s` 切换排序；INFO 页 `↑↓` 滚动话题列表。
 
 ### 刷新率
@@ -65,7 +60,7 @@ unitreetop -d 1 -i lo            # 连接 unitree_mujoco 仿真（domain 1）
 | ALL、POWER 及其余页面 | 1 Hz | 1 Hz | 1–10 Hz |
 
 机器人数据快照频率跟随当前页面（不低于 `--robot-hz`，默认 20 Hz），所以 50 Hz 页面显示的是 50 Hz 的新数据，曲线窗口约 4.8 s（240 个点）。
-在 Go2 的 Orin NX 上实测：1 Hz 页面约占单核 10%，100 Hz 页面约占 58%（主要是界面重绘，与刷新率大致成正比）。
+在 Go2 的 Orin NX 上实测：1 Hz 页面约占单核 8%，50 Hz 页面约占 48%（每帧绘制约 4 ms，开销与刷新率大致成正比）。
 
 ## 页面
 

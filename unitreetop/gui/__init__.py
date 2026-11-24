@@ -3,8 +3,8 @@ import curses
 import locale
 import time
 
-from .common import col, init_colors, put, uptime
-from .pages import PAGES, status_attr
+from .common import SUPERSCRIPT, bg, c, grad, init_colors, put, set_dims, uptime
+from .pages import PAGES, motor_temp_attr, status_attr
 
 
 class UnitreeTopGUI:
@@ -110,62 +110,78 @@ class UnitreeTopGUI:
             scr.redrawwin()
             self._last_full = now
         h, w = scr.getmaxyx()
-        if h < 10 or w < 40:
-            put(scr, 0, 0, "terminal too small ({}x{})".format(w, h), col("red"))
+        set_dims(h, w)
+        if h < 12 or w < 60:
+            put(scr, 0, 0, "terminal too small ({}x{}), need 60x12".format(w, h), c("crit", True))
             scr.refresh()
             return
-        self.ut.want_procs = self.pages[self.page].name == "CPU"
+        self.ut.want_procs = self.cur.name == "cpu"
         self._header(scr, w)
         try:
-            self.pages[self.page].draw(scr, 2, 1, h - 3, w - 2)
+            self.cur.draw(scr, 1, 0, h - 2, w)
         except Exception as e:  # keep the UI alive whatever a page does
-            put(scr, 3, 1, "page error: {}".format(e), col("red"))
-        self._tabbar(scr, h, w)
+            put(scr, 2, 2, "page error: {}".format(e), c("crit", True))
+        self._menu(scr, h, w)
         scr.refresh()
+
+    def _sep(self, scr, x):
+        return put(scr, 0, x, " │ ", c("div_line"))
 
     def _header(self, scr, w):
         ut, r = self.ut, self.ut.robot
         s = ut._sys.static
-        x = put(scr, 0, 0, " unitreetop ", col("bg_green") | curses.A_BOLD)
-        x += put(scr, 0, x, " {} ".format(s.get("hostname", "")), curses.A_BOLD)
-        x += put(scr, 0, x, "│ ", col("dim"))
+        x = put(scr, 0, 0, " unitree", c("hi_fg", True))
+        x += put(scr, 0, x, "top", c("title", True))
+        x += put(scr, 0, x, "  " + s.get("hostname", ""), c("main_fg"))
+        x += self._sep(scr, x)
         mdl = r.model.name if r.model else "robot"
-        x += put(scr, 0, x, "{} {} ".format(mdl, r.status.upper()), status_attr(r.status))
+        x += put(scr, 0, x, "● ", status_attr(r.status))
+        x += put(scr, 0, x, mdl + " ", c("title", True))
+        x += put(scr, 0, x, r.status, status_attr(r.status))
         if r.online and r.battery.valid:
             b = r.battery
-            c = col("green") if b.soc > 40 else (col("yellow") if b.soc > 20 else col("red"))
-            x += put(scr, 0, x, "│ ", col("dim"))
-            x += put(scr, 0, x, "BAT {:.0f}% {:.1f}V {:+.1f}A ".format(b.soc, b.voltage, b.current), c)
+            x += self._sep(scr, x)
+            x += put(scr, 0, x, "BAT ", c("graph_text"))
+            x += put(scr, 0, x, "{:.0f}%".format(b.soc), grad("battery", b.soc / 100.0) | curses.A_BOLD)
+            x += put(scr, 0, x, " {:.1f}V {:+.1f}A".format(b.voltage, b.current), c("main_fg"))
         if r.online and r.motors:
             hot = max(r.active_motors or r.motors, key=lambda m: m.temp)
-            x += put(scr, 0, x, "│ ", col("dim"))
-            x += put(scr, 0, x, "hottest {} {:.0f}°C ".format(hot.name, hot.temp),
-                     col("red") if hot.temp >= 75 else (col("yellow") if hot.temp >= 60 else 0))
-        right = "CPU {:.0f}%  up {}  {}".format(ut.cpu.get("total", 0), uptime(ut.stats.get("uptime", 0)),
-                                                time.strftime("%H:%M:%S"))
+            x += self._sep(scr, x)
+            x += put(scr, 0, x, "hottest ", c("graph_text"))
+            x += put(scr, 0, x, "{} {:.0f}°C".format(hot.name, hot.temp), motor_temp_attr(hot.temp))
+        right = time.strftime("%H:%M:%S")
+        info = "up {}  ".format(uptime(ut.stats.get("uptime", 0)))
         if self.paused:
-            right = "[PAUSED] " + right
-        put(scr, 0, max(x + 1, w - len(right) - 1), right, col("dim"))
+            info = "PAUSED  " + info
+        rx = w - len(right) - 1
+        if rx - len(info) > x + 2:
+            put(scr, 0, rx - len(info), info, c("warn", True) if self.paused else c("graph_text"))
+        if rx > x + 1:
+            put(scr, 0, rx, right, c("title", True))
 
-    def _tabbar(self, scr, h, w):
+    def _menu(self, scr, h, w):
         y = h - 1
-        x = 0
+        x = 1
         self._tabs = []
         for i, p in enumerate(self.pages):
-            label = " {}{} ".format(i + 1, p.name)
-            attr = col("bg_cyan") | curses.A_BOLD if i == self.page else 0
-            n = put(scr, y, x, label, attr)
-            self._tabs.append((x, x + n, i))
-            x += n
+            sel = i == self.page
+            x0 = x
+            a_key = bg("hi_fg", "selected_bg") | curses.A_BOLD if sel else c("hi_fg", True)
+            a_txt = bg("selected_fg", "selected_bg") | curses.A_BOLD if sel else c("main_fg")
+            x += put(scr, y, x, " " + SUPERSCRIPT[i + 1], a_key)
+            x += put(scr, y, x, p.name + " ", a_txt)
+            self._tabs.append((x0, x, i))
         p = self.cur
-        rate = "+/-:{:g}Hz".format(p.hz)
-        if self._fps and self._fps < p.hz * 0.9:  # say so when the terminal can't keep up
-            rate += "(~{:.0f})".format(self._fps)
-        hint = p.help()
-        hint = (hint + "  " if hint else "") + "p:pause q:quit"
-        hx = max(x + 1, w - len(hint) - len(rate) - 3)
-        n = put(scr, y, hx, rate, col("yellow") | curses.A_BOLD)
-        put(scr, y, hx + n + 2, hint, col("dim"))
+        items = [("+-", "{:g}Hz".format(p.hz) + ("(~{:.0f})".format(self._fps)
+                                                  if self._fps and self._fps < p.hz * 0.9 else ""))]
+        items += list(p.help()) + [("p", "pause"), ("q", "quit")]
+        text_len = sum(len(k) + len(t) + 3 for k, t in items)
+        hx = max(x + 2, w - text_len - 1)
+        for k, t in items:
+            if hx + len(k) + len(t) + 2 > w:
+                break
+            hx += put(scr, y, hx, k, c("hi_fg", True))
+            hx += put(scr, y, hx, " " + t + "  ", c("warn", True) if k == "+-" else c("graph_text"))
 
 
 def run_gui(ut, start_page=0):
