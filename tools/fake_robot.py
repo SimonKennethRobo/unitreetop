@@ -7,7 +7,12 @@
 """
 import argparse
 import math
+import os
+import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import unitreetop._sdk  # noqa: E402,F401  bundled SDK first
 
 from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelPublisher
 

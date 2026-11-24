@@ -6,6 +6,11 @@ from .common import (bg, c, grad, graph, graph_panel, meter, meter_row, panel, p
                      temp_attr, uptime)
 
 DEG = 180.0 / math.pi
+
+
+def _sdk_desc():
+    from .. import _sdk
+    return _sdk.describe()
 MOTOR_WARN, MOTOR_CRIT = 60, 75
 
 
@@ -711,7 +716,7 @@ class InfoPage(Page):
         host = [(k, v) for k, v in host if v not in (None, "")]
         robot = [("model", r.model.name if r.model else "?"), ("family", r.family), ("status", r.status),
                  ("interface", ut.interface or "auto"), ("domain", ut.domain), ("lowstate", r.lowstate_topic),
-                 ("fw version", r.version), ("tick", r.tick),
+                 ("fw version", r.version), ("tick", r.tick), ("sdk", _sdk_desc()),
                  ("motors", "{} active / {}".format(len(r.active_motors), len(r.motors)))]
         if r.error:
             robot.append(("error", r.error))
