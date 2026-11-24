@@ -1,50 +1,55 @@
-# 架构说明
+# Architecture
 
-本文介绍 unitreetop 的模块划分、线程模型、DDS 细节和扩展方法，读者对象是想修改或扩展本项目的开发者。
+**English** | [中文](architecture.zh-CN.md)
 
-## 数据流
+This guide covers module layout, threading, DDS details and how to extend unitreetop. It is meant for anyone changing the code.
+
+## Data flow
 
 ```
                  ┌──────────────────────── UnitreeTop (core/__init__.py) ────────────────────────┐
                  │                                                                               │
  psutil ────────▶│ SystemStats.read()  ─┐                                                        │
- jtop / sysfs ──▶│ GpuBackend.read()   ─┼─ utop-sys 线程 (--interval，默认 0.5 s) ─▶ stats, gpu_stats
+ jtop / sysfs ──▶│ GpuBackend.read()   ─┼─ utop-sys thread (--interval, 0.5 s) ─▶ stats, gpu_stats │
  NVML / smi ────▶│                      ┘                                     │                  │
                  │                                                            ▼                  │
- DDS ──────────▶ │ RobotLink.snapshot() ── utop-robot 线程 (robot_hz) ──▶ robot: RobotState      │
+ DDS ──────────▶ │ RobotLink.snapshot() ── utop-robot thread (robot_hz) ──▶ robot: RobotState    │
  (rt/lowstate …) │                                                            │                  │
-                 │                                    History (环形缓冲, 240 点) ◀──────────────┘
+                 │                                  History (ring buffers, 240 samples) ◀────────┘
                  └───────────────────────────────────────────────────────────────────────────────┘
-                                                      │ 读取
+                                                      │ read
                                                       ▼
-                         UnitreeTopGUI (gui/__init__.py) ── 按当前页 hz 重绘 ── Page.draw()
+                         UnitreeTopGUI (gui/__init__.py) ── redraw at page hz ── Page.draw()
 ```
 
-- **`core` 不依赖 `gui`。** 命令行的 `--json` 和 Python API 直接使用 `UnitreeTop`。
-- **线程之间不加锁。** 采集线程每次把新对象整体赋给属性（例如 `self.robot = st`），读取方拿到的是某一时刻的完整快照；
-  Python 中属性赋值是原子的。
-- **采样频率跟随页面。** GUI 切换页面或调节刷新率时，把 `ut.robot_hz` 设为 `max(--robot-hz, 页面 hz)`。
+- **`core` does not depend on `gui`.** `--json` and the Python API use `UnitreeTop` directly.
+- **No locks between threads.** Collector threads publish new objects by plain attribute assignment
+  (`self.robot = st`), which is atomic in Python, so readers always see a complete snapshot.
+- **Sampling follows the page.** When the page or its rate changes, the GUI sets `ut.robot_hz = max(--robot-hz, page hz)`.
 
-## 模块
+## Modules
 
-| 文件 | 职责 |
+| File | Responsibility |
 |---|---|
-| `core/system.py` | psutil：CPU（含每核频率）、内存、磁盘、网卡速率、温度、进程表 |
-| `core/gpu.py` | GPU/板卡后端：`JtopBackend`、`TegraBackend`、`NvidiaBackend`（NVML / nvidia-smi）、`NullBackend`，所有后端的 `read()` 返回相同结构 |
-| `core/models.py` | 机器人型号表（DDS 家族、关节名，`None` 表示空槽位）、`guess_model()`、遥控器按键定义 |
-| `core/robot.py` | `RobotLink`：DDS 发现、订阅与快照；`RobotState` 等数据类；遥控器 40 字节数据解析 |
-| `core/demo.py` | `DemoLink`：合成数据，接口与 `RobotLink` 相同 |
-| `core/__init__.py` | `UnitreeTop`：组织两个采集线程，管理历史缓冲，提供 `ok()` 和 `as_dict()` |
-| `gui/common.py` | 绘图原语：主题与 256 色映射、`panel`、`meter`、`smeter`、`graph`（braille）、`graph_panel` |
-| `gui/pages.py` | 各页面类，每个类声明自己的 `name`、`hz`、`hz_step`、`hz_min`、`hz_max` |
-| `gui/__init__.py` | 主循环：定时重绘、按键处理、顶栏、底栏菜单 |
+| `_sdk.py` | puts the bundled `third_party/unitree_sdk2_python` (submodule) ahead of any installed SDK; `UNITREETOP_SDK=system` turns this off |
+| `core/system.py` | psutil: CPU (incl. per-core frequency), memory, disk, NIC rates, temperatures, processes |
+| `core/gpu.py` | GPU/board backends `JtopBackend`, `TegraBackend`, `NvidiaBackend` (NVML / nvidia-smi) and `NullBackend`; every `read()` returns the same shape |
+| `core/models.py` | robot model table (DDS family, joint names, `None` = unused slot), `guess_model()`, remote button names |
+| `core/robot.py` | `RobotLink`: DDS discovery, subscriptions and snapshots; `RobotState` dataclasses; 40-byte remote decoding |
+| `core/demo.py` | `DemoLink`: synthetic data with the same interface as `RobotLink` |
+| `core/__init__.py` | `UnitreeTop`: the two collector threads, history buffers, `ok()`, `as_dict()` |
+| `gui/common.py` | drawing primitives: theme and 256-color mapping, `panel`, `meter`, `smeter`, braille `graph`, `graph_panel` |
+| `gui/pages.py` | one class per page; each declares `name`, `hz`, `hz_step`, `hz_min`, `hz_max` |
+| `gui/__init__.py` | main loop: timed redraw, keys, header, menu bar |
 
-## DDS 细节
+## DDS details
 
-1. 调用 `ChannelFactoryInitialize(domain, iface)`，只用它生成 CycloneDDS 的网卡配置；之后自己创建 `DomainParticipant`。
-2. 用 `BuiltinDataReader(DCPSPublication)` 持续收集话题名到类型名的映射。
-3. 确定 lowstate 的家族：`--robot` 已指定型号时直接使用；否则等到发现 `rt/lowstate`，最多等 3 秒，之后默认为 go 家族。
-4. 订阅方式（`RobotLink._sub`）：
+1. `ChannelFactoryInitialize(domain, iface)` is called only to build the CycloneDDS interface configuration;
+   unitreetop then creates its own `DomainParticipant`.
+2. A `BuiltinDataReader(DCPSPublication)` keeps collecting the topic name → type name mapping.
+3. The lowstate family comes from `--robot` if given. Otherwise unitreetop waits for `rt/lowstate` to be discovered
+   (at most 3 s) and falls back to the go family.
+4. Subscriptions (`RobotLink._sub`):
 
    ```python
    DataReader(dp, Topic(dp, name, T),
@@ -52,79 +57,81 @@
               listener=Listener(on_data_available=count_only))
    ```
 
-   - 回调只做计数，用于计算话题频率。
-   - `snapshot()` 中调用 `reader.take(N=1)`，只解析最新的一条。
+   - The listener only counts arrivals, which gives the topic rate.
+   - `snapshot()` calls `reader.take(N=1)` and decodes only the newest sample.
+5. Auxiliary topics are matched by **type**, not by name: `SportModeState_`, `unitree_hg BmsState_`, `MainBoardState_`.
+   - When several topics share a type, the full-rate topic wins over the `rt/lf/*` low-rate mirror.
+   - The discovery thread keeps subscribing to topics that appear later.
 
-5. 辅助话题按**类型**匹配，不写死话题名：`SportModeState_`、`unitree_hg BmsState_`、`MainBoardState_`。
-   - 同一类型有多个话题时，优先选全速话题，而不是 `rt/lf/*` 低频镜像。
-   - 发现线程会持续补订阅后来才出现的话题。
+> The SDK's `ChannelSubscriber` is not used, for two reasons. It `take()`s and decodes every sample in Python, which
+> costs about 70% of a core at 500 Hz. It also prints `[Reader] take sample error` to stdout on shutdown, which corrupts the curses screen.
 
-> 不使用 SDK 的 `ChannelSubscriber`，原因有两个：它对每条消息都会 `take()` 并在 Python 中解析（500 Hz 时约占 70% 单核）；
-> 关闭时还会往 stdout 打印 `[Reader] take sample error`，弄乱 curses 画面。
+### Units
 
-### 单位约定
+All physical quantities in `RobotState` are SI:
 
-`RobotState` 中的物理量统一使用 SI 单位：
-
-| 物理量 | 单位 | 备注 |
+| Quantity | Unit | Note |
 |---|---|---|
-| 关节位置 q | rad | |
-| 关节速度 dq | rad/s | |
-| 关节力矩 tau | N·m | |
-| 温度 | °C | |
-| 电池电压 | V | |
-| 电池电流 | A | 负值表示放电 |
-| 电芯电压 | V | |
+| joint position q | rad | |
+| joint velocity dq | rad/s | |
+| joint torque tau | N·m | |
+| temperature | °C | |
+| battery voltage | V | |
+| battery current | A | negative = discharging |
+| cell voltage | V | |
 
-原始字段的换算在 `RobotLink._fill_go()` 和 `RobotLink._fill_hg()` 中完成：
-- go 家族：BMS 的 `current` 和 `cell_vol` 单位是 mA、mV，电压取 `power_v`。
-- hg 家族：`bmsvoltage[0]` 大于 1000 时按 mV 处理。
+Raw fields are converted in `RobotLink._fill_go()` and `RobotLink._fill_hg()`:
 
-## 界面绘制
+- go family: BMS `current` and `cell_vol` are mA and mV; pack voltage comes from `power_v`.
+- hg family: `bmsvoltage[0]` is treated as mV when it is above 1000.
 
-- **配色**：`common.THEME` 和 `common.GRADIENTS` 中的十六进制颜色，在运行时映射到最接近的 xterm-256 颜色；只有 8 色时映射到 8 种基本色。
-  - 颜色对按需分配并缓存。Python 的 `color_pair()` 最多只能编码 255 个颜色对，所以每个渐变只取 12 级。
-- **braille 曲线**：每个字符单元横向容纳 2 个采样、纵向容纳 4 级。字符通过 5×5 的查找表生成；每行颜色按高度沿渐变取值。
-- **性能**：`put()` 是调用最多的函数，每帧只读一次屏幕尺寸（`set_dims`）；`meter` 把同色的连续格子合并成一次 `addstr`。
-  在 Orin NX 上，JOINTS 页每帧绘制约 4 ms。
-- **画面恢复**：每 2 秒调用一次 `redrawwin()`，用来修复内核或 syslog 广播造成的花屏。
+## Rendering
 
-## 扩展
+- **Colors.** Hex colors in `common.THEME` and `common.GRADIENTS` are mapped at runtime to the nearest xterm-256
+  entry, or to the 8 basic colors on poor terminals.
+  - Color pairs are allocated lazily and cached. Python's `color_pair()` can only encode 255 pairs, so each gradient has 12 steps.
+- **Braille graphs.** Each character cell holds 2 samples across and 4 levels up. Cells come from a 5×5 lookup table,
+  and each row is colored along the gradient by its height.
+- **Performance.** `put()` is the hottest function, so the screen size is read once per frame (`set_dims`). `meter`
+  batches same-colored cells into one `addstr`. The JOINTS page takes about 4 ms per frame on an Orin NX.
+- **Repair.** `redrawwin()` runs every 2 s to undo kernel and syslog broadcasts written over the screen.
 
-### 添加机器人型号
+## Extending
 
-1. 在 `core/models.py` 的 `MODELS` 中添加一项：
+### Add a robot model
+
+1. Add an entry to `MODELS` in `core/models.py`:
 
    ```python
    "x1": RobotModel("x1", "X1", GO, ["joint0", "joint1", None, "joint3"], "quadruped"),
    ```
 
-   - 列表的下标就是 `motor_state` 的槽位，`None` 表示该槽位未使用。
-   - 第三个参数是 DDS 家族：`GO` 或 `HG`。
+   - The list index is the `motor_state` slot; `None` marks an unused slot.
+   - The third argument is the DDS family: `GO` or `HG`.
+2. For auto-detection, add a rule to `guess_model()`, based on which motor slots carry data.
+3. The CLI's `-r` choices pick the new model up automatically.
 
-2. 如需自动识别，在 `guess_model()` 中加入判断规则（依据是哪些电机槽位有数据）。
-3. 命令行的 `-r` 选项会自动包含新型号。
+### Add a message type
 
-### 添加新的消息类型
+1. Define the type name in `core/robot.py`, e.g. `T_XXX = "unitree_go::msg::dds_::Xxx_"`.
+2. Register it in the `roles` map of `_subscribe_extra()` and import its IDL class there.
+3. Read `self._latest["<role>"].last` in `snapshot()` and copy what you need into a `RobotState` field.
+   Add the field to the dataclass as well.
 
-1. 在 `core/robot.py` 中定义类型名常量（例如 `T_XXX = "unitree_go::msg::dds_::Xxx_"`）。
-2. 在 `_subscribe_extra()` 的 `roles` 中登记这个类型，并在同一函数里导入对应的 IDL 类。
-3. 在 `snapshot()` 中通过 `self._latest["<role>"].last` 读取数据，写入 `RobotState` 的字段（新字段要同时加到对应的 dataclass 里）。
+### Add a page
 
-### 添加页面
+1. Subclass `Page` in `gui/pages.py`:
+   - set `name`, and optionally `hz`, `hz_step`, `hz_min`, `hz_max`;
+   - implement `draw(win, y, x, h, w)`, and optionally `key(ch)` and `help()`;
+   - draw panels with `panel()`, which returns the inner rectangle `(iy, ix, ih, iw)`.
+2. Append the class to `PAGES`; its position is its number.
+3. Add its name to `PAGE_NAMES` in `__main__.py` so `-p` can select it.
+4. If the page needs graphs, record values with `history.push(key, value)` in `UnitreeTop._robot_loop()` or `_sys_loop()`.
 
-1. 在 `gui/pages.py` 中继承 `Page`：
-   - 设置 `name`；如有需要，设置 `hz`、`hz_step`、`hz_min`、`hz_max`。
-   - 实现 `draw(win, y, x, h, w)`；可选实现 `key(ch)` 和 `help()`。
-   - 用 `panel()` 画面板，它会返回内部区域 `(iy, ix, ih, iw)`。
-2. 把新类加入 `PAGES` 列表，页面编号就是它在列表中的位置。
-3. 在 `__main__.py` 的 `PAGE_NAMES` 中加上页面名，`-p` 选项才能选到它。
-4. 如果页面需要曲线数据，在 `UnitreeTop._robot_loop()` 或 `_sys_loop()` 中用 `history.push(key, value)` 记录。
-
-## 测试
+## Testing
 
 ```bash
-python3 -m unitreetop --demo -r g1                       # 不依赖 DDS 的界面测试
-python3 tools/fake_robot.py --family go -d 7 -i lo &     # 测试 go 家族 DDS 路径（含 sportmodestate）
+python3 -m unitreetop --demo -r g1                       # UI only, no DDS
+python3 tools/fake_robot.py --family go -d 7 -i lo &     # go-family DDS path incl. sportmodestate
 python3 -m unitreetop -d 7 -i lo --json --wait 5
 ```
