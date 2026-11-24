@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "unitreetop"
+version = "0.1.0"
+description = "jtop-style terminal monitor for Unitree robots (Go2/B2/H1/G1/H1-2): CPU/GPU + joints, battery, IMU over unitree_sdk2"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+dependencies = ["psutil>=5.6"]
+
+[project.optional-dependencies]
+# unitree_sdk2py is not on PyPI: install it from https://github.com/unitreerobotics/unitree_sdk2_python
+jetson = ["jetson-stats>=4.2"]
+nvidia = ["nvidia-ml-py"]
+
+[project.scripts]
+unitreetop = "unitreetop.__main__:main"
+untop = "unitreetop.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["unitreetop*"]
