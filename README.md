@@ -6,12 +6,16 @@
 ![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue)
 ![Platform](https://img.shields.io/badge/platform-Jetson%20%7C%20Linux-lightgrey)
 
-**unitreetop** is a terminal monitor for Unitree robots, inspired by
-[jetson_stats / jtop](https://github.com/rbonghi/jetson_stats) and styled after [btop](https://github.com/aristocratos/btop).
+**unitreetop** is a terminal console for Unitree robots: a monitor inspired by
+[jetson_stats / jtop](https://github.com/rbonghi/jetson_stats) and styled after [btop](https://github.com/aristocratos/btop),
+plus a keyboard control panel.
 
-Next to the usual host metrics (CPU, GPU, memory, temperatures, power), it shows the robot's own state live over
-[`unitree_sdk2py`](https://github.com/unitreerobotics/unitree_sdk2_python) (CycloneDDS): **joints, battery/BMS, IMU,
-foot force, wireless remote and sport state**. It is read-only and never sends a command.
+- **Monitor.** Next to the usual host metrics (CPU, GPU, memory, temperatures, power), it shows the robot's own state live over
+  [`unitree_sdk2py`](https://github.com/unitreerobotics/unitree_sdk2_python) (CycloneDDS): **joints, battery/BMS, IMU,
+  foot force, wireless remote and sport state**.
+- **Control.** Page ⁹ drives the robot from the keyboard through the high-level sport/loco API:
+  `WASD`/`QE` for velocity, `Z`/`X` to sit or lie down and stand up, `P` to damp.
+  It sends nothing until you arm it, and `--no-control` turns it off completely.
 
 ![all](docs/screenshot-all.png)
 ![joints](docs/screenshot-joints.png)
@@ -29,6 +33,7 @@ foot force, wireless remote and sport state**. It is read-only and never sends a
 - [Usage](#usage)
 - [Pages](#pages)
 - [JSON output and Python API](#json-output-and-python-api)
+- [Keyboard control](#keyboard-control)
 - [How it works](#how-it-works)
 - [Troubleshooting](#troubleshooting)
 - [Known limitations](#known-limitations)
@@ -49,6 +54,8 @@ foot force, wireless remote and sport state**. It is read-only and never sends a
 - **Auto-detection**: robot family and model are detected through DDS discovery; the NIC on the robot network
   (192.168.123.x) is picked automatically.
 - **btop look**: rounded panels, superscript hotkeys, `■` gradient meters, braille graphs, 256-color theme.
+- **Keyboard teleop**: velocity lock with per-press steps (as in `go2_keyboard_ctrl`), posture commands and damping,
+  with explicit arming and automatic disarm on every exit path ([details](#keyboard-control)).
 - **Per-page refresh rate**: change it with `+`/`-`. JOINTS/IMU default to 50 Hz, all other pages to 1 Hz.
 - **Low overhead**: about 8% of one core on a Go2's Orin NX at 1 Hz.
 - **Self-contained**: the official Python SDK is bundled as a git submodule.
@@ -56,14 +63,17 @@ foot force, wireless remote and sport state**. It is read-only and never sends a
 
 ## Supported robots
 
-| Model | DDS family | Joints | Battery source | Status |
-|---|---|---|---|---|
-| Go2 | `unitree_go` | 12 | `LowState_.bms_state` | ✅ tested on a real robot |
-| Go2-W | `unitree_go` | 16 (incl. wheels) | `LowState_.bms_state` | implemented from the SDK definitions |
-| B2 / B2-W | `unitree_go` | 12 / 16 | `LowState_.bms_state` | implemented from the SDK definitions; pass `-r b2` / `-r b2w` |
-| H1 | `unitree_go` | 19 | `LowState_.bms_state` | implemented from the SDK definitions |
-| G1 (23/29 DoF) | `unitree_hg` | 23 / 29 | `BmsState_` topic | tested against simulated DDS data |
-| H1-2 | `unitree_hg` | 27 | `BmsState_` topic | tested against simulated DDS data |
+| Model | DDS family | Joints | Battery source | Control API | Monitor status |
+|---|---|---|---|---|---|
+| Go2 | `unitree_go` | 12 | `LowState_.bms_state` | go2 `SportClient` | ✅ tested on a real robot |
+| Go2-W | `unitree_go` | 16 (incl. wheels) | `LowState_.bms_state` | go2 `SportClient` | implemented from the SDK definitions |
+| B2 / B2-W | `unitree_go` | 12 / 16 | `LowState_.bms_state` | b2 `SportClient` | implemented from the SDK definitions; pass `-r b2` / `-r b2w` |
+| H1 | `unitree_go` | 19 | `LowState_.bms_state` | h1 `LocoClient` | implemented from the SDK definitions |
+| G1 (23/29 DoF) | `unitree_hg` | 23 / 29 | `BmsState_` topic | g1 `LocoClient` | tested against simulated DDS data |
+| H1-2 | `unitree_hg` | 27 | `BmsState_` topic | – (monitor only) | tested against simulated DDS data |
+
+The control path has been tested end to end against a fake RPC service (`tools/fake_robot.py`) for both the
+`SportClient` and the `LocoClient`. It has **not** yet been exercised on a real robot.
 
 Joint names and order come from the `unitree_sdk2_python` low-level examples (`example/*/low_level`).
 
@@ -152,12 +162,15 @@ unitreetop -d 1 -i lo            # unitree_mujoco simulator (domain 1)
 | `-r`, `--robot` | `auto` | `auto` / `go2` / `go2w` / `b2` / `b2w` / `h1` / `g1` / `h1_2`; selects joint names and layout |
 | `--lowstate-topic` | `rt/lowstate` | or `rt/lf/lowstate` (low-rate mirror) |
 | `--gpu` | `auto` | GPU/board backend: `auto` / `jtop` / `tegra` / `nvidia` / `none` |
-| `-p`, `--page` | `all` | start page: `all` `cpu` `gpu` `mem` `joints` `imu` `power` `info` |
+| `-p`, `--page` | `all` | start page: `all` `cpu` `gpu` `mem` `joints` `imu` `power` `info` `ctrl` |
 | `--interval` | `0.5` | host statistics period [s] |
 | `--robot-hz` | `20` | minimum robot snapshot rate (fast pages raise it) |
 | `--no-robot` | | host only |
 | `--demo` | | synthetic robot data |
 | `--json` / `--wait N` | / `2` | collect for N seconds, print one JSON snapshot, exit |
+| `--no-control` | | monitor only: the control page cannot be armed and no command is ever sent |
+| `--vel-step` | `0.1` | teleop velocity change per key press [m/s or rad/s] |
+| `--max-vx` / `--max-vy` / `--max-wz` | model default | teleop velocity caps [m/s, m/s, rad/s] |
 
 | Environment variable | Effect |
 |---|---|
@@ -169,7 +182,7 @@ unitreetop -d 1 -i lo            # unitree_mujoco simulator (domain 1)
 
 | Key | Action |
 |---|---|
-| `1`–`8`, `←` `→` `Tab`, mouse click on the menu | switch page |
+| `1`–`9`, `←` `→` `Tab`, mouse click on the menu | switch page |
 | `+` / `-` | refresh rate of the current page |
 | `p` | pause / resume |
 | `q` / `Esc` | quit |
@@ -177,6 +190,7 @@ unitreetop -d 1 -i lo            # unitree_mujoco simulator (domain 1)
 | `a` (JOINTS) | show / hide motor slots without data |
 | `s` (CPU) | process sort: CPU → memory → PID |
 | `↑` `↓` (INFO) | scroll the DDS topic list |
+| `Enter` (CTRL) | arm / disarm the control panel; see [Keyboard control](#keyboard-control) for the keys while armed |
 
 ### Refresh rate
 
@@ -186,6 +200,7 @@ when the terminal cannot keep up, e.g. `50Hz(~38)`.
 | Page | Default | Step | Range |
 |---|---|---|---|
 | JOINTS, IMU | 50 Hz | 10 Hz | 10–200 Hz |
+| CTRL | 20 Hz | 5 Hz | 5–50 Hz |
 | ALL, CPU, GPU, MEM, POWER, INFO | 1 Hz | 1 Hz | 1–10 Hz |
 
 Robot data is sampled at the rate of the current page (at least `--robot-hz`), so a 50 Hz page really shows 50 Hz
@@ -207,6 +222,7 @@ The terminal needs 256 colors (`xterm-256color`, `tmux-256color`, …); otherwis
 | ⁶ **imu** | RPY and quaternion, angular rate, acceleration and its norm; sportmodestate (when published), foot force, remote sticks and buttons; roll/pitch/gyro-z graphs |
 | ⁷ **power** | battery SOC, voltage, current, power, cycles, SOH, BMS temperatures, cell voltages and spread; robot board (bus voltage, NTCs, fans); battery power, battery voltage and compute board power graphs |
 | ⁸ **info** | host and software versions; robot model, DDS family, firmware, tick, SDK in use, rate of each subscribed topic; all discovered DDS topics (● = subscribed) |
+| ⁹ **ctrl** | keyboard control: armed state, commanded vs. limit velocity, speed scale, measured sport state, command log with robot replies, on-screen keyboard |
 
 Joint temperatures turn yellow at 60 °C and red at 75 °C.
 
@@ -247,6 +263,62 @@ with UnitreeTop(interface="eth1") as ut:       # same options as the CLI: domain
 | battery | `bat_power`, `bat_voltage` |
 | joints | `q<N>`, `dq<N>`, `tau<N>`, `temp<N>` |
 
+## Keyboard control
+
+> ⚠️ This page moves a real robot. Clear the area, keep the official remote (or another e-stop) at hand, and on
+> humanoids keep the robot on a gantry until you know how it behaves.
+
+Open page ⁹ (`9`), check that the robot shows **online**, then press **Enter** to arm. While disarmed, the page sends
+nothing and the usual keys (`q` quit, `p` pause) keep working.
+
+Control uses **velocity lock**, the same scheme as the `go2_keyboard_ctrl` script. Keys *adjust* the velocity, and it
+stays locked until you change it:
+
+- **First press from zero** on an axis jumps to the start speed: 3 steps for `vx`/`vy` (0.3 m/s) and 5 steps for `wz` (0.5 rad/s).
+- **Each further press** adds or removes one step (`--vel-step`, default 0.1). Pressing the opposite key slows down,
+  passes through zero, and then starts the other way.
+- **Caps.** Speeds are clamped to the model limits: 1.0 m/s, 0.6 m/s and 1.5 rad/s for quadrupeds; 0.6 m/s, 0.4 m/s and
+  1.0 rad/s for humanoids. Override them with `--max-vx`, `--max-vy` and `--max-wz`.
+- **Sending.** A non-zero velocity is sent at 10 Hz; one StopMove follows when it returns to zero.
+
+| Key | Command |
+|---|---|
+| `W` / `S` | `vx` + / − one step (forward / backward) |
+| `A` / `D` | `vy` + / − one step (left / right) |
+| `Q` / `E` | `wz` + / − one step (turn left / right) |
+| `Space` | clear the velocity (StopMove) |
+| `Z` | clear velocity, then sit or lie down |
+| `X` | clear velocity, then stand up (also leaves damping) |
+| `P` | clear velocity, then damp: motors go limp, a standing robot will fall |
+| `Esc` / `Enter` | disarm (clears the velocity) |
+
+What `Z`, `X` and `P` call depends on the robot; the panel shows the exact name before you press:
+
+| Robot | `Z` | `X` | `P` | Velocity |
+|---|---|---|---|---|
+| Go2 / Go2-W | `StandDown` | `RecoveryStand` | `Damp` | `Move(vx, vy, wz)` |
+| B2 / B2-W | `StandDown` | `RecoveryStand` | `Damp` | `Move(vx, vy, wz)` |
+| G1 | `Sit` (FSM 3) | `Squat2StandUp` (FSM 706) | `Damp` (FSM 1) | `SetVelocity(vx, vy, wz, 1 s)` |
+| H1 | – | `StandUp` (FSM 2) | `Damp` (FSM 1) | `SetVelocity(vx, vy, wz, 1 s)` |
+
+`RecoveryStand` stands the quadruped up from lying down or from damping and leaves it in balance stand, ready to walk.
+
+**Safety model**
+
+- **Explicit arming.** Nothing is sent until you arm, and arming is refused while the robot is not online.
+  A session that never arms never sends a single command, not even StopMove on exit.
+- **Automatic disarm.** The panel disarms (and stops a moving robot) on `Esc`, on leaving the page, on quit, Ctrl-C,
+  SIGHUP (for example an SSH drop) or SIGTERM, and when the robot goes offline or stale. The locked velocity therefore
+  never outlives the session.
+- **Auto-repeat guard.** The same posture key pressed again within 0.65 s is ignored, so a held key fires once.
+- **Damping lock.** After `P` the velocity keys are locked until `X` (stand up) succeeds.
+- **Failed Move.** If a Move call fails, the velocity is cleared instead of being retried blindly.
+- **Off the UI thread.** All RPC calls run on a separate teleop thread; replies and error codes (for example
+  `3104 timeout (service not running?)`) appear in the log panel.
+
+The sport service must be running: if `rt/sportmodestate` is missing, the robot is probably in a low-level or
+debug mode, and commands will time out.
+
 ## How it works
 
 See [docs/architecture.md](docs/architecture.md) for details.
@@ -283,7 +355,8 @@ See [docs/architecture.md](docs/architecture.md) for details.
 - Go2 and B2 (and Go2-W and B2-W) publish identical lowstate layouts and cannot be told apart, so pass `-r b2` for a B2.
 - G1/H1-2 BMS units (voltage in mV, current in mA) are inferred from the SDK IDL and not yet verified on a real
   robot. Without a BMS topic, the battery voltage is estimated from the motor bus voltage.
-- Read-only by design: no commands are sent.
+- Control uses the high-level sport/loco API only; there is no low-level (joint) command mode.
+- Keyboard control is untested on real hardware so far (only against the fake RPC service).
 - One robot (one DDS domain and NIC) per instance.
 
 ## Development
@@ -295,18 +368,23 @@ unitreetop/
 ├── tools/fake_robot.py               # fake DDS publisher (go / hg family)
 ├── unitreetop/
 │   ├── __main__.py                   # CLI entry point
+│   ├── core/control.py               # teleop: backends (SportClient / LocoClient / demo) + sender thread
 │   ├── _sdk.py                       # bundled SDK on sys.path
 │   ├── core/                         # collectors: system / gpu / robot (DDS) / models / demo
 │   └── gui/                          # curses UI: common (primitives, theme) / pages / main loop
 └── docs/architecture.md              # architecture and extension guide
 ```
 
-Test the DDS path without a robot:
+Test the DDS and control paths without a robot. `fake_robot.py` also serves a fake `sport` RPC service that
+prints every request and feeds Move/SetVelocity back into the published sport state:
 
 ```bash
-python3 tools/fake_robot.py --family hg -d 1 -i lo &    # fake G1: 29 joints + rt/lf/bmsstate
-unitreetop -d 1 -i lo
+python3 tools/fake_robot.py --family go -d 7 -i lo &    # fake Go2: lowstate, sportmodestate, SportClient API
+unitreetop -d 7 -i lo -p ctrl                           # Enter to arm, then W/A/S/D/Q/E/Space/Z/X/P
+python3 tools/fake_robot.py --family hg -d 7 -i lo &    # fake G1: 29 joints, rt/lf/bmsstate, LocoClient API
 ```
+
+Use a domain other than the robot's (here 7) so that test commands can never reach real hardware.
 
 For adding robot models or pages, see [docs/architecture.md](docs/architecture.md#extending).
 

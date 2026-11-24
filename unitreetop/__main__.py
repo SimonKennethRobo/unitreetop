@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import signal
 import sys
 import time
 
@@ -34,11 +35,11 @@ def build_parser():
     p.add_argument("-p", "--page", default="all", choices=PAGE_NAMES, help="start page")
     p.add_argument("--no-control", action="store_true",
                    help="monitor only: disable the keyboard control page (no command is ever sent)")
-    p.add_argument("--hold-timeout", type=float, default=0.7,
-                   help="teleop deadman: an axis returns to zero this long after its key stops repeating [s]")
-    p.add_argument("--max-vx", type=float, default=None, help="teleop forward speed limit [m/s] (model default)")
-    p.add_argument("--max-vy", type=float, default=None, help="teleop lateral speed limit [m/s] (model default)")
-    p.add_argument("--max-wz", type=float, default=None, help="teleop yaw rate limit [rad/s] (model default)")
+    p.add_argument("--vel-step", type=float, default=0.1,
+                   help="teleop velocity change per key press [m/s or rad/s] (first press from zero: 3 steps, yaw 5)")
+    p.add_argument("--max-vx", type=float, default=None, help="teleop forward speed cap [m/s] (model default)")
+    p.add_argument("--max-vy", type=float, default=None, help="teleop lateral speed cap [m/s] (model default)")
+    p.add_argument("--max-wz", type=float, default=None, help="teleop yaw rate cap [rad/s] (model default)")
     p.add_argument("--demo", action="store_true", help="synthetic robot data, no DDS needed")
     p.add_argument("--no-robot", action="store_true", help="host stats only")
     p.add_argument("--json", action="store_true", help="print one JSON snapshot and exit")
@@ -70,8 +71,16 @@ def main(argv=None):
     ut = UnitreeTop(interface=args.interface, domain=args.domain, robot=args.robot, interval=args.interval,
                     robot_hz=args.robot_hz, gpu=args.gpu, demo=args.demo, no_robot=args.no_robot,
                     lowstate_topic=args.lowstate_topic, control=not args.no_control,
-                    hold_timeout=args.hold_timeout,
+                    vel_step=args.vel_step,
                     max_vel={"vx": args.max_vx, "vy": args.max_vy, "wz": args.max_wz})
+    signalled = []
+
+    def end_session(signum, _frame):  # ssh drop / kill: still run the cleanup (StopMove if armed)
+        signalled.append(signum)
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGHUP, end_session)
+    signal.signal(signal.SIGTERM, end_session)
     try:
         ut.start()
         if args.json:
@@ -92,8 +101,12 @@ def main(argv=None):
             finally:
                 os.dup2(saved_fd2, 2)
                 sys.stdout, sys.stderr = real_out, real_err
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         pass
+    except Exception:
+        # after SIGHUP the tty may be gone, so curses' own cleanup can fail: not an error then
+        if not signalled:
+            raise
     finally:
         ut.close()
     # cyclonedds listener threads can keep the interpreter alive; leave promptly

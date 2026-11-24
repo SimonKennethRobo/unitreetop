@@ -1,17 +1,22 @@
 """Keyboard teleoperation: high-level velocity + posture commands over unitree_sdk2 RPC.
 
-Safety model
-------------
-* Nothing is sent until the operator *arms* the controller (and arming requires an
-  online robot). Leaving the control page, quitting, or Esc disarms and stops.
-* Velocity is hold-to-drive: each key press refreshes a per-axis deadman timer; an axis
-  whose key has not been seen for ``hold_timeout`` s returns to zero (terminals have no
-  key-release events, so the timer must outlast the keyboard auto-repeat delay).
-* Commanded velocity is slew-rate limited, then sent at ``rate`` Hz while non-zero;
-  one StopMove is sent when it reaches zero. Space zeroes everything immediately.
-* Damp is executed ahead of anything else queued and zeroes the velocity.
+Behaviour follows the go2_keyboard_ctrl script (velocity lock, keys adjust steps):
 
-All RPC calls run on the teleop thread, never on the UI thread.
+* W/S, A/D, Q/E adjust vx, vy, wz. From zero the first press jumps to a start speed
+  (3 steps for x/y, 5 for yaw, 0.1 per step); every further press adds or removes one
+  step. The velocity stays *locked* until changed, and is sent as Move at 10 Hz while
+  non-zero; a single StopMove follows when it returns to zero.
+* Space clears the velocity. Z / X / P first clear the velocity (StopMove if moving),
+  then call the posture API. The same posture key repeated within 0.65 s is ignored
+  (keyboard auto-repeat). After P (damp) velocity keys are ignored until X succeeds.
+
+Safety additions of unitreetop
+------------------------------
+* Nothing is sent until the operator *arms* the panel, and arming needs an online
+  robot. Esc, leaving the page, quitting, SIGHUP/SIGTERM and the robot going offline
+  all disarm, which stops the robot. A session that never arms sends nothing.
+* Velocities are clamped to per-model limits (the original script has none).
+* All RPC calls run on the teleop thread, never on the UI thread.
 """
 import collections
 import threading
@@ -30,6 +35,9 @@ RPC_ERRORS = {
 AXES = ("vx", "vy", "wz")
 # key -> (axis, sign)
 DRIVE_KEYS = {"w": ("vx", 1), "s": ("vx", -1), "a": ("vy", 1), "d": ("vy", -1), "q": ("wz", 1), "e": ("wz", -1)}
+VELOCITY_STEP = 0.10                       # m/s for x/y, rad/s for yaw
+START_STEPS = {"vx": 3, "vy": 3, "wz": 5}  # first press from zero
+POSTURE_REPEAT_GAP = 0.65                  # s; same posture key again within this is ignored
 
 
 def describe(code):
@@ -46,9 +54,8 @@ def describe(code):
 
 class Backend:
     name = "none"
-    # default limits: m/s, m/s, rad/s  and slew limits per second
-    limits = {"vx": 0.5, "vy": 0.3, "wz": 0.8}
-    accel = {"vx": 1.0, "vy": 1.0, "wz": 2.0}
+    # velocity caps: m/s, m/s, rad/s
+    limits = {"vx": 1.0, "vy": 0.6, "wz": 1.5}
     # action key -> label shown in the panel
     labels = {"sit": "n/a", "stand": "n/a", "damp": "Damp"}
 
@@ -99,8 +106,7 @@ class LocoBackend(Backend):
 
     The SDK's posture helpers discard the RPC code, so SetFsmId is called directly.
     """
-    limits = {"vx": 0.3, "vy": 0.2, "wz": 0.5}
-    accel = {"vx": 0.6, "vy": 0.6, "wz": 1.0}
+    limits = {"vx": 0.6, "vy": 0.4, "wz": 1.0}
 
     def __init__(self, model_key):
         if model_key == "h1":
@@ -169,22 +175,21 @@ def make_backend(model_key, demo_link=None):
 # ----------------------------------------------------------------------------
 
 class Teleop:
-    SCALES = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5)
+    """Velocity-lock teleop state machine plus the sender thread."""
 
-    def __init__(self, backend, hold_timeout=0.7, rate=20.0, limits=None):
+    def __init__(self, backend, rate=10.0, limits=None, step=VELOCITY_STEP):
         self.backend = backend
         self.limits = dict(backend.limits)
         self.limits.update({k: v for k, v in (limits or {}).items() if v})
-        self.accel = dict(backend.accel)
-        self.hold_timeout = hold_timeout
+        self.step = step
         self.rate = rate
-        self.scale_i = self.SCALES.index(1.0)
         self.armed = False
-        self.cmd = {a: 0.0 for a in AXES}          # slew-limited velocity actually sent
-        self._target = {a: 0.0 for a in AXES}
-        self._pressed = {a: 0.0 for a in AXES}     # monotonic time of last key press
+        self.damped = False                        # set by P, cleared by a successful X
+        self.steps = {a: 0 for a in AXES}
+        self.cmd = {a: 0.0 for a in AXES}          # locked velocity being sent
         self._moving = False
         self._queue = collections.deque()
+        self._last_posture = (None, 0.0)
         self.log = collections.deque(maxlen=8)     # (wall time, text, ok)
         self.last_move = ""
         self.sent = 0
@@ -195,9 +200,8 @@ class Teleop:
         self._thread.start()
 
     # -- operator API (UI thread) ----------------------------------------
-    @property
-    def scale(self):
-        return self.SCALES[self.scale_i]
+    def max_steps(self, axis):
+        return max(1, int(round(self.limits[axis] / self.step)))
 
     def arm(self):
         with self._lock:
@@ -205,7 +209,7 @@ class Teleop:
         self._note("armed", True)
 
     def disarm(self, reason="disarmed"):
-        """Stop (StopMove is sent only if we were armed) and refuse further commands."""
+        """Clear the velocity (StopMove if moving) and refuse further commands."""
         if not self.armed:
             return
         self.stop(note=False)
@@ -214,51 +218,61 @@ class Teleop:
         self._note(reason, True)
 
     def drive(self, key):
-        """Register a press of w/a/s/d/q/e."""
+        """w/s a/d q/e: start at START_STEPS from zero, then +/- one step per press."""
         axis, sign = DRIVE_KEYS[key]
         with self._lock:
-            if not self.armed:
+            if not self.armed or self.damped:
                 return
-            self._target[axis] = sign * self.limits[axis] * self.scale
-            self._pressed[axis] = time.monotonic()
-            # opposite key on the same axis overrides immediately
+            self._last_posture = (None, 0.0)
+            n = self.steps[axis]
+            n = sign * START_STEPS[axis] if n == 0 else n + sign
+            cap = self.max_steps(axis)
+            self.steps[axis] = max(-cap, min(cap, n))
+            self._update_cmd()
         self._wake.set()
+
+    def _update_cmd(self):
+        for a in AXES:
+            self.cmd[a] = round(self.steps[a] * self.step, 3)
+
+    def _clear(self):
+        for a in AXES:
+            self.steps[a] = 0
+            self.cmd[a] = 0.0
+        self._queue.append("stop")
 
     def stop(self, note=True):
         with self._lock:
             if not self.armed:  # a monitoring-only session never sends anything
                 return
-            for a in AXES:
-                self._target[a] = 0.0
-                self._pressed[a] = 0.0
-                self.cmd[a] = 0.0
-            self._queue.append("stop")
+            self._clear()
+            self._last_posture = (None, 0.0)
         if note:
-            self._note("stop", True)
+            self._note("velocity cleared", True)
         self._wake.set()
 
     def action(self, name):
+        """z / x / p: clear velocity first, then the posture call (auto-repeat guarded)."""
         with self._lock:
             if not self.armed:
                 return
-            if name == "damp":  # emergency-ish: drop pending work, zero velocity, go first
-                self._queue.clear()
-                for a in AXES:
-                    self._target[a] = self.cmd[a] = 0.0
-                    self._pressed[a] = 0.0
-                self._queue.appendleft("damp")
-            else:
-                self._queue.append(name)
+            now = time.monotonic()
+            last, at = self._last_posture
+            self._last_posture = (name, now)
+            if name == last and now - at < POSTURE_REPEAT_GAP:
+                return
+            self._clear()
+            if name == "damp":
+                self.damped = True
+                self._queue.clear()              # damp goes first; nothing else pending matters
+                self._queue.append("stop")
+            self._queue.append(name)
         self._wake.set()
 
-    def change_scale(self, step):
-        self.scale_i = max(0, min(len(self.SCALES) - 1, self.scale_i + step))
-
     def active_keys(self):
-        now = time.monotonic()
         keys = set()
         for k, (axis, sign) in DRIVE_KEYS.items():
-            if now - self._pressed[axis] < self.hold_timeout and self._target[axis] * sign > 0:
+            if self.steps[axis] * sign > 0:
                 keys.add(k)
         return keys
 
@@ -278,52 +292,55 @@ class Teleop:
             code = fn(*args)
         except Exception as e:
             self._note("{}: {}".format(label, e), False)
-            return
+            return None
         self._note("{}: {}".format(label, describe(code)), code in (None, 0))
+        return code
 
     def _loop(self):
         period = 1.0 / self.rate
-        last = time.monotonic()
+        next_move = 0.0
         while self._running:
-            self._wake.wait(period)
+            self._wake.wait(max(0.0, next_move - time.monotonic()) if self._moving else period)
             self._wake.clear()
-            now = time.monotonic()
-            dt = min(now - last, 0.2)
-            last = now
             with self._lock:
                 jobs = list(self._queue)
                 self._queue.clear()
                 armed = self.armed
-                # deadman: axes whose key is no longer repeating fall back to zero
-                for a in AXES:
-                    if now - self._pressed[a] >= self.hold_timeout:
-                        self._target[a] = 0.0
-                    step = self.accel[a] * self.scale * dt
-                    d = self._target[a] - self.cmd[a]
-                    self.cmd[a] += max(-step, min(step, d))
-                    if abs(self.cmd[a]) < 1e-3 and self._target[a] == 0.0:
-                        self.cmd[a] = 0.0
                 cmd = (self.cmd["vx"], self.cmd["vy"], self.cmd["wz"])
             for job in jobs:
-                if job == "stop":  # only ever queued while armed
+                if job == "stop":                 # only queued while armed
+                    if self._moving:
+                        self._call("StopMove", self.backend.stop_move)
+                        self._moving = False
+                    continue
+                code = self._call(self.backend.labels.get(job, job), self.backend.action, job)
+                if job == "stand" and code in (None, 0):
+                    self.damped = False
+                elif job == "damp" and code not in (None, 0):
+                    pass  # keep velocity keys locked anyway: the robot state is unknown
+            if not armed:
+                if self._moving:  # disarmed while moving (stop job already handled above)
                     self._call("StopMove", self.backend.stop_move)
                     self._moving = False
-                else:
-                    self._call(self.backend.labels.get(job, job), self.backend.action, job)
-                    if job == "damp":
-                        self._moving = False  # no StopMove to a robot that just went limp
-            if not armed:
                 continue
+            now = time.monotonic()
             if any(cmd):
-                try:
-                    code = self.backend.move(*cmd)
-                    self.sent += 1
-                    self.last_move = "Move({:+.2f}, {:+.2f}, {:+.2f}) {}".format(cmd[0], cmd[1], cmd[2], describe(code))
-                    if code not in (None, 0):
-                        self._note(self.last_move, False)
-                except Exception as e:
-                    self._note("Move: {}".format(e), False)
-                self._moving = True
+                if not self._moving or now >= next_move:
+                    next_move = now + period
+                    try:
+                        code = self.backend.move(*cmd)
+                        self.sent += 1
+                        self.last_move = "Move({:+.2f}, {:+.2f}, {:+.2f}) {}".format(
+                            cmd[0], cmd[1], cmd[2], describe(code))
+                        if code not in (None, 0):  # like the script: never keep driving blind
+                            self._note(self.last_move + " - velocity cleared", False)
+                            with self._lock:
+                                self._clear()
+                    except Exception as e:
+                        self._note("Move: {} - velocity cleared".format(e), False)
+                        with self._lock:
+                            self._clear()
+                    self._moving = True
             elif self._moving:
                 self._call("StopMove", self.backend.stop_move)
                 self._moving = False

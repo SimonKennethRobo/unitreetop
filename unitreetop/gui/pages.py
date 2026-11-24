@@ -777,7 +777,7 @@ class CtrlPage(Page):
 
     def help(self):
         if self.modal:
-            return [("Esc", "disarm"), ("spc", "stop"), ("P", "damp")]
+            return [("Esc", "disarm"), ("spc", "clear"), ("P", "damp")]
         return [("Enter", "arm")]
 
     # -- keys --------------------------------------------------------------
@@ -802,10 +802,6 @@ class CtrlPage(Page):
             tp.action("stand")
         elif k.lower() == "p":
             tp.action("damp")
-        elif k == "[":
-            tp.change_scale(-1)
-        elif k == "]":
-            tp.change_scale(+1)
         elif ch == 27:
             tp.disarm()
         else:
@@ -861,21 +857,25 @@ class CtrlPage(Page):
                 put(win, iy + 2, ix + 33, "mode {} gait {} h {:.2f}m".format(r.sport.mode, r.sport.gait,
                                                                              r.sport.body_height),
                     c("main_fg"), maxw=iw - 33)
-            subtitle(win, iy + 4, ix, iw, "command", "proc_box")
+            subtitle(win, iy + 4, ix, iw, "locked velocity", "proc_box")
             for i, a in enumerate(("vx", "vy", "wz")):
                 yy = iy + 5 + i
-                lim = tp.limits[a] * tp.scale if tp is not None else 0.0
+                lim = tp.limits[a] if tp is not None else 0.0
                 v = tp.cmd[a] if tp is not None else 0.0
+                n = tp.steps[a] if tp is not None else 0
                 put(win, yy, ix, "{:<3}".format(a), c("main_fg"))
                 put(win, yy, ix + 4, "{:>+6.2f}".format(v), c("title", True) if v else c("graph_text"))
-                put(win, yy, ix + 11, "/{:.2f} {:<5}".format(lim, UNITS[a]), c("graph_text"))
-                smeter(win, yy, ix + 23, max(5, iw - 23), v, lim or 1.0)
+                put(win, yy, ix + 11, "{:<5}".format(UNITS[a]), c("graph_text"))
+                put(win, yy, ix + 17, "{:>+3d}".format(n), c("warn") if n else c("graph_text"))
+                smeter(win, yy, ix + 22, max(5, iw - 22), v, lim or 1.0)
             if tp is not None:
-                put(win, iy + 9, ix, "speed ", c("graph_text"))
-                put(win, iy + 9, ix + 6, "{:.0f}%".format(tp.scale * 100), c("warn", True))
-                put(win, iy + 9, ix + 12, "[ ] to change · deadman {:.1f}s · {} Move sent".format(
-                    tp.hold_timeout, tp.sent), c("graph_text"), maxw=iw - 12)
-                put(win, iy + 10, ix, tp.last_move or "-", c("graph_text"), maxw=iw)
+                put(win, iy + 9, ix, "step {:.2f} · cap {:.1f}/{:.1f}/{:.1f} · {} Move sent".format(
+                    tp.step, tp.limits["vx"], tp.limits["vy"], tp.limits["wz"], tp.sent), c("graph_text"), maxw=iw)
+                if tp.damped:
+                    put(win, iy + 10, ix, "DAMPED - velocity keys locked until X (stand) succeeds",
+                        c("warn", True), maxw=iw)
+                else:
+                    put(win, iy + 10, ix, tp.last_move or "-", c("graph_text"), maxw=iw)
             if r.sport.valid:
                 sv = r.sport
                 subtitle(win, iy + 11, ix, iw, "measured · " + sv.source.strip("()"), "proc_box")
@@ -900,7 +900,7 @@ class CtrlPage(Page):
 
     def _keys(self, win, y, x, h, w, tp, armed):
         iy, ix, ih, iw = panel(win, y, x, h, w, "keys", None, "robot_box",
-                               "hold to drive" if armed else "disarmed")
+                               "velocity lock" if armed else "disarmed")
         if ih < 12:
             return
         active = tp.active_keys() if armed else set()
@@ -925,12 +925,12 @@ class CtrlPage(Page):
             return kw
 
         bx = ix + 2
-        key(iy, bx, "Q", "turn L")
-        key(iy, bx + 7, "W", "fwd")
-        key(iy, bx + 14, "E", "turn R")
-        key(iy + 4, bx, "A", "left")
-        key(iy + 4, bx + 7, "S", "back")
-        key(iy + 4, bx + 14, "D", "right")
+        key(iy, bx, "Q", "yaw +")
+        key(iy, bx + 7, "W", "vx +")
+        key(iy, bx + 14, "E", "yaw -")
+        key(iy + 4, bx, "A", "vy +")
+        key(iy + 4, bx + 7, "S", "vx -")
+        key(iy + 4, bx + 14, "D", "vy -")
         key(iy + 8, bx, "Z", "")
         key(iy + 8, bx + 7, "X", "")
         key(iy + 8, bx + 14, "P", "")
@@ -943,8 +943,8 @@ class CtrlPage(Page):
             maxw=iw - 4)
         tx = bx + 24
         if tx + 20 < ix + iw:
-            rows = [("Enter", "arm / disarm"), ("Space", "stop now"), ("Esc", "disarm"), ("[ ]", "speed -/+"),
-                    ("1-8", "leave page = disarm")]
+            rows = [("Enter", "arm / disarm"), ("Space", "clear velocity"), ("Esc", "disarm"),
+                    ("W/S..", "+/- one step"), ("1-8", "leave page = disarm")]
             for i, (k, t) in enumerate(rows):
                 put(win, iy + 1 + 2 * i, tx, "{:<6}".format(k), c("hi_fg", True))
                 put(win, iy + 1 + 2 * i, tx + 7, t, c("main_fg"), maxw=ix + iw - tx - 7)

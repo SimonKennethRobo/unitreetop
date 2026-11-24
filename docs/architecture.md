@@ -36,6 +36,7 @@ This guide covers module layout, threading, DDS details and how to extend unitre
 | `core/gpu.py` | GPU/board backends `JtopBackend`, `TegraBackend`, `NvidiaBackend` (NVML / nvidia-smi) and `NullBackend`; every `read()` returns the same shape |
 | `core/models.py` | robot model table (DDS family, joint names, `None` = unused slot), `guess_model()`, remote button names |
 | `core/robot.py` | `RobotLink`: DDS discovery, subscriptions and snapshots; `RobotState` dataclasses; 40-byte remote decoding |
+| `core/control.py` | teleop: `Backend` implementations (`SportBackend` for go2/b2, `LocoBackend` for g1/h1, `DemoBackend`) and the `Teleop` state machine with its sender thread |
 | `core/demo.py` | `DemoLink`: synthetic data with the same interface as `RobotLink` |
 | `core/__init__.py` | `UnitreeTop`: the two collector threads, history buffers, `ok()`, `as_dict()` |
 | `gui/common.py` | drawing primitives: theme and 256-color mapping, `panel`, `meter`, `smeter`, braille `graph`, `graph_panel` |
@@ -85,6 +86,39 @@ Raw fields are converted in `RobotLink._fill_go()` and `RobotLink._fill_hg()`:
 - go family: BMS `current` and `cell_vol` are mA and mV; pack voltage comes from `power_v`.
 - hg family: `bmsvoltage[0]` is treated as mV when it is above 1000.
 
+## Teleop
+
+`UnitreeTop.get_teleop()` builds the controller lazily, the first time the operator arms page ⁹. The SDK RPC client is
+therefore never created in a monitoring-only session.
+
+```
+ UI thread (CtrlPage.capture)                        utop-teleop thread (Teleop._loop)
+ ─────────────────────────────                       ─────────────────────────────────
+ Enter ──▶ get_teleop() / arm()                      queued jobs first: "stop" (StopMove if moving),
+ w/s a/d q/e ──▶ drive(): steps ±1                     then "sit" / "stand" / "damp"
+   (from 0: START_STEPS; clamped to limits)          locked velocity != 0 ? Move every 0.1 s
+ space ──▶ stop(): steps = 0, queue "stop"             : one StopMove when it returns to 0
+ z/x/p ──▶ action(): clear + queue posture           Move error -> velocity cleared
+   (same key < 0.65 s ignored; p sets damped,        every reply -> log (0 ok, 31xx/32xx RPC errors)
+    velocity keys locked until x succeeds)
+ Esc / page change / quit / SIGHUP ──▶ disarm()
+```
+
+Further guarantees:
+
+- `UnitreeTop._robot_loop` disarms when the robot is no longer online.
+- `UnitreeTop.close()` (quit, Ctrl-C, SIGHUP, SIGTERM) disarms and waits for the final StopMove.
+- `stop()` and `disarm()` are no-ops unless armed, so a session that never armed sends nothing.
+
+The GUI gives pages two hooks for this:
+
+- `Page.capture(ch)` runs **before** the global key handling. The armed control page uses it to own `q`, `p` and `Esc`, and sets
+  `modal`, which hides "pause/quit" in the menu bar.
+- `Page.on_leave()` runs on every page change.
+
+To support a new robot API, subclass `Backend` with `move(vx, vy, wz)`, `stop_move()`, `action(name)` for
+`sit`/`stand`/`damp`, plus `labels` and `limits`, and return it from `make_backend()`.
+
 ## Rendering
 
 - **Colors.** Hex colors in `common.THEME` and `common.GRADIENTS` are mapped at runtime to the nearest xterm-256
@@ -132,6 +166,7 @@ Raw fields are converted in `RobotLink._fill_go()` and `RobotLink._fill_hg()`:
 
 ```bash
 python3 -m unitreetop --demo -r g1                       # UI only, no DDS
-python3 tools/fake_robot.py --family go -d 7 -i lo &     # go-family DDS path incl. sportmodestate
+python3 tools/fake_robot.py --family go -d 7 -i lo &     # go-family DDS path incl. sportmodestate + fake sport RPC
 python3 -m unitreetop -d 7 -i lo --json --wait 5
+python3 -m unitreetop -d 7 -i lo -p ctrl                 # control page against the fake RPC service
 ```

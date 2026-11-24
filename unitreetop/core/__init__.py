@@ -19,7 +19,7 @@ from .system import SystemStats
 class UnitreeTop:
     def __init__(self, interface=None, domain=0, robot="auto", interval=0.5, robot_hz=20.0,
                  gpu="auto", demo=False, no_robot=False, lowstate_topic=None,
-                 control=True, hold_timeout=0.7, max_vel=None):
+                 control=True, vel_step=0.1, max_vel=None):
         self.interval = interval
         self.robot_hz = robot_hz        # current snapshot rate (the GUI raises it for fast pages)
         self.robot_hz_base = robot_hz   # floor, keeps history sampling sane on slow pages
@@ -38,7 +38,7 @@ class UnitreeTop:
             self._link = RobotLink(interface, domain, robot, lowstate_topic)
         # teleop is created lazily, the first time the operator arms the control page
         self.control_enabled = control and not no_robot
-        self.hold_timeout = hold_timeout
+        self.vel_step = vel_step
         self.max_vel = max_vel or {}
         self.teleop = None
         self.teleop_error = "" if self.control_enabled else "control disabled (--no-control)"
@@ -88,7 +88,7 @@ class UnitreeTop:
             self.teleop_error = err
             return None
         self.teleop_error = ""
-        self.teleop = Teleop(backend, hold_timeout=self.hold_timeout, limits=self.max_vel)
+        self.teleop = Teleop(backend, limits=self.max_vel, step=self.vel_step)
         return self.teleop
 
     def close(self):

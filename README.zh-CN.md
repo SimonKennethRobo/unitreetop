@@ -6,11 +6,13 @@
 ![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue)
 ![Platform](https://img.shields.io/badge/platform-Jetson%20%7C%20Linux-lightgrey)
 
-**unitreetop** 是面向宇树（Unitree）机器人的终端监控工具，灵感来自
-[jetson_stats / jtop](https://github.com/rbonghi/jetson_stats)，界面风格参照 [btop](https://github.com/aristocratos/btop)。
+**unitreetop** 是面向宇树（Unitree）机器人的终端上位机：监控部分参考
+[jetson_stats / jtop](https://github.com/rbonghi/jetson_stats)，界面风格参照 [btop](https://github.com/aristocratos/btop)，另外带一个键盘控制面板。
 
-除了 CPU、GPU、内存、温度、功耗等常规指标，它还通过 [`unitree_sdk2py`](https://github.com/unitreerobotics/unitree_sdk2_python)（CycloneDDS）
-实时显示机器人自身状态：**关节、电池 BMS、IMU、足端力、遥控器、运动状态**。它只读取数据，不发送任何控制命令。
+- **监控**：除了 CPU、GPU、内存、温度、功耗等常规指标，还通过 [`unitree_sdk2py`](https://github.com/unitreerobotics/unitree_sdk2_python)（CycloneDDS）
+  实时显示机器人自身状态：**关节、电池 BMS、IMU、足端力、遥控器、运动状态**。
+- **控制**：第 ⁹ 页通过高层运动接口用键盘控制机器人：`WASD`/`QE` 调速度，`Z`/`X` 坐下（趴下）/站立，`P` 阻尼。
+  解锁前不会发送任何指令；用 `--no-control` 可以完全关闭控制功能。
 
 ![all](docs/screenshot-all.png)
 ![joints](docs/screenshot-joints.png)
@@ -28,6 +30,7 @@
 - [使用](#使用)
 - [页面说明](#页面说明)
 - [JSON 输出与 Python API](#json-输出与-python-api)
+- [键盘控制](#键盘控制)
 - [工作原理](#工作原理)
 - [故障排查](#故障排查)
 - [已知限制](#已知限制)
@@ -47,20 +50,24 @@
   - DDS 发现的全部话题及类型、各订阅话题的实际频率。
 - **自动识别**：通过 DDS 发现机制判断机器人家族和型号；自动选择机器人内网（192.168.123.x）所在的网卡。
 - **btop 风格界面**：圆角面板、上标快捷键、`■` 渐变条、braille 点阵曲线、256 色主题。
+- **键盘控制**：速度锁定、按键按步长调速（与 `go2_keyboard_ctrl` 脚本一致），支持姿态指令和阻尼；
+  需要显式解锁，所有退出路径都会自动上锁并停止（[详见](#键盘控制)）。
 - **每页独立刷新率**：用 `+`/`-` 调节；JOINTS/IMU 默认 50 Hz，其余页面默认 1 Hz。
 - **低开销**：在 Go2 的 Orin NX 上，1 Hz 页面只占单核约 8%。
 - 也可以输出 JSON 快照，或作为 Python 库使用；附带演示模式和 DDS 模拟发布器。
 
 ## 支持的机器人
 
-| 型号 | DDS 消息家族 | 关节数 | 电池来源 | 状态 |
-|---|---|---|---|---|
-| Go2 | `unitree_go` | 12 | `LowState_.bms_state` | ✅ 真机验证 |
-| Go2-W | `unitree_go` | 16（含轮） | `LowState_.bms_state` | 按 SDK 定义实现 |
-| B2 / B2-W | `unitree_go` | 12 / 16 | `LowState_.bms_state` | 按 SDK 定义实现，需加 `-r b2` / `-r b2w` |
-| H1 | `unitree_go` | 19 | `LowState_.bms_state` | 按 SDK 定义实现 |
-| G1（23/29 自由度） | `unitree_hg` | 23 / 29 | `BmsState_` 话题 | 用模拟 DDS 数据验证 |
-| H1-2 | `unitree_hg` | 27 | `BmsState_` 话题 | 用模拟 DDS 数据验证 |
+| 型号 | DDS 消息家族 | 关节数 | 电池来源 | 控制接口 | 监控状态 |
+|---|---|---|---|---|---|
+| Go2 | `unitree_go` | 12 | `LowState_.bms_state` | go2 `SportClient` | ✅ 真机验证 |
+| Go2-W | `unitree_go` | 16（含轮） | `LowState_.bms_state` | go2 `SportClient` | 按 SDK 定义实现 |
+| B2 / B2-W | `unitree_go` | 12 / 16 | `LowState_.bms_state` | b2 `SportClient` | 按 SDK 定义实现，需加 `-r b2` / `-r b2w` |
+| H1 | `unitree_go` | 19 | `LowState_.bms_state` | h1 `LocoClient` | 按 SDK 定义实现 |
+| G1（23/29 自由度） | `unitree_hg` | 23 / 29 | `BmsState_` 话题 | g1 `LocoClient` | 用模拟 DDS 数据验证 |
+| H1-2 | `unitree_hg` | 27 | `BmsState_` 话题 | 无（仅监控） | 用模拟 DDS 数据验证 |
+
+`SportClient` 和 `LocoClient` 两条控制链路都已用模拟 RPC 服务（`tools/fake_robot.py`）做过端到端测试，**尚未在真机上运行过**。
 
 关节名和顺序取自 `unitree_sdk2_python` 的示例程序（`example/*/low_level`）。
 
@@ -147,12 +154,15 @@ unitreetop -d 1 -i lo            # 连接 unitree_mujoco 仿真（domain 1）
 | `-r`, `--robot` | `auto` | `auto` / `go2` / `go2w` / `b2` / `b2w` / `h1` / `g1` / `h1_2`，决定关节命名和布局 |
 | `--lowstate-topic` | `rt/lowstate` | 也可以用 `rt/lf/lowstate`（低频镜像） |
 | `--gpu` | `auto` | GPU/板卡后端：`auto` / `jtop` / `tegra` / `nvidia` / `none` |
-| `-p`, `--page` | `all` | 启动页面：`all` `cpu` `gpu` `mem` `joints` `imu` `power` `info` |
+| `-p`, `--page` | `all` | 启动页面：`all` `cpu` `gpu` `mem` `joints` `imu` `power` `info` `ctrl` |
 | `--interval` | `0.5` | 主机统计的采样周期（秒） |
 | `--robot-hz` | `20` | 机器人快照频率的下限（高刷新率页面会自动提高） |
 | `--no-robot` | | 只监控主机 |
 | `--demo` | | 使用合成的机器人数据 |
 | `--json` / `--wait N` | / `2` | 采集 N 秒后输出一次 JSON 并退出 |
+| `--no-control` | | 只监控：控制页无法解锁，任何情况下都不发指令 |
+| `--vel-step` | `0.1` | 每次按键的速度变化量（m/s 或 rad/s） |
+| `--max-vx` / `--max-vy` / `--max-wz` | 按型号 | 速度上限（m/s、m/s、rad/s） |
 | 环境变量 `UNITREETOP_IFACE`、`UNITREETOP_DOMAIN` | | 分别作为 `-i`、`-d` 的默认值 |
 | 环境变量 `UNITREETOP_SDK=system` | | 不用内置 SDK，改用系统安装的 `unitree_sdk2py` |
 
@@ -160,7 +170,7 @@ unitreetop -d 1 -i lo            # 连接 unitree_mujoco 仿真（domain 1）
 
 | 按键 | 作用 |
 |---|---|
-| `1`–`8`、`←` `→` `Tab`、鼠标点击底栏 | 切换页面 |
+| `1`–`9`、`←` `→` `Tab`、鼠标点击底栏 | 切换页面 |
 | `+` / `-` | 调节当前页的刷新率 |
 | `p` | 暂停/继续刷新 |
 | `q` / `Esc` | 退出 |
@@ -168,6 +178,7 @@ unitreetop -d 1 -i lo            # 连接 unitree_mujoco 仿真（domain 1）
 | `a`（JOINTS） | 显示/隐藏没有数据的电机槽位 |
 | `s`（CPU） | 进程排序：CPU → 内存 → PID |
 | `↑` `↓`（INFO） | 滚动 DDS 话题列表 |
+| `Enter`（CTRL） | 解锁 / 上锁控制面板；解锁后的按键见[键盘控制](#键盘控制) |
 
 ### 刷新率
 
@@ -176,6 +187,7 @@ unitreetop -d 1 -i lo            # 连接 unitree_mujoco 仿真（domain 1）
 | 页面 | 默认 | 步长 | 范围 |
 |---|---|---|---|
 | JOINTS、IMU | 50 Hz | 10 Hz | 10–200 Hz |
+| CTRL | 20 Hz | 5 Hz | 5–50 Hz |
 | ALL、CPU、GPU、MEM、POWER、INFO | 1 Hz | 1 Hz | 1–10 Hz |
 
 机器人数据的采样频率会跟随当前页面（不低于 `--robot-hz`），所以 50 Hz 页面显示的确实是 50 Hz 的新数据。
@@ -196,7 +208,8 @@ unitreetop -d 1 -i lo            # 连接 unitree_mujoco 仿真（domain 1）
 | ⁵ **joints** | 所有关节的 mode、q（rad/°）、dq、tau、温度、丢包（go 家族）或第二温度/电压/错误码（hg 家族），q 和 tau 的正负条；选中关节的 q/dq/tau 曲线 |
 | ⁶ **imu** | RPY 与四元数、角速度、加速度及其模长；sportmodestate（有发布时）、足端力、遥控器摇杆和按键；roll/pitch/gyro-z 曲线 |
 | ⁷ **power** | 电池 SOC、电压、电流、功率、循环次数、SOH、BMS 温度、各节电芯电压与压差；机器人主板信息（母线电压、NTC、风扇）；电池功率、电池电压、计算板功耗曲线 |
-| ⁸ **info** | 主机与软件版本；机器人型号、DDS 家族、固件版本、tick、各订阅话题的频率；DDS 发现的全部话题（● 表示已订阅） |
+| ⁸ **info** | 主机与软件版本；机器人型号、DDS 家族、固件版本、tick、所用 SDK、各订阅话题的频率；DDS 发现的全部话题（● 表示已订阅） |
+| ⁹ **ctrl** | 键盘控制：解锁状态、锁定的速度与档位、实测运动状态、指令日志（含机器人返回码）、屏幕键盘 |
 
 温度配色：关节温度 ≥ 60 °C 显示黄色，≥ 75 °C 显示红色。
 
@@ -235,6 +248,55 @@ with UnitreeTop(interface="eth1") as ut:       # 参数同命令行：domain、r
 - 电池：`bat_power`、`bat_voltage`
 - 关节：`q<N>`、`dq<N>`、`tau<N>`、`temp<N>`
 
+## 键盘控制
+
+> ⚠️ 这一页会让真实的机器人动起来。请清空周围场地，手边备好官方遥控器（或其它急停手段）；
+> 人形机器人在熟悉之前请挂在吊架上操作。
+
+按 `9` 打开第 ⁹ 页，确认机器人状态为 **online** 后，按 **Enter** 解锁。上锁状态下这一页不发任何指令，`q` 退出、`p` 暂停等按键照常可用。
+
+控制采用**速度锁定**模式，与 `go2_keyboard_ctrl` 脚本相同：按键是在*调整*速度，调好的速度会一直保持，直到再次改变。
+
+- **起步**：某个轴速度为 0 时，第一次按键直接跳到起步速度：`vx`/`vy` 为 3 档（0.3 m/s），`wz` 为 5 档（0.5 rad/s）。
+- **调速**：之后每按一次加或减一档（`--vel-step`，默认 0.1）。按反方向键会逐档减速，过零后再朝反方向起步。
+- **上限**：速度按型号限幅，四足为 1.0 m/s、0.6 m/s、1.5 rad/s，人形为 0.6 m/s、0.4 m/s、1.0 rad/s；
+  可用 `--max-vx`、`--max-vy`、`--max-wz` 修改。
+- **发送**：速度不为 0 时以 10 Hz 发送；回到 0 时发一次 StopMove。
+
+| 按键 | 指令 |
+|---|---|
+| `W` / `S` | `vx` 加 / 减一档（前进 / 后退） |
+| `A` / `D` | `vy` 加 / 减一档（左移 / 右移） |
+| `Q` / `E` | `wz` 加 / 减一档（左转 / 右转） |
+| `Space` | 速度清零（StopMove） |
+| `Z` | 先清零速度，再坐下或趴下 |
+| `X` | 先清零速度，再站立（也用于从阻尼状态恢复） |
+| `P` | 先清零速度，再进入阻尼：电机放松，站立中的机器人会倒下 |
+| `Esc` / `Enter` | 上锁（同时清零速度） |
+
+`Z`、`X`、`P` 实际调用的接口因机型而异，面板上会显示具体名称：
+
+| 机型 | `Z` | `X` | `P` | 速度 |
+|---|---|---|---|---|
+| Go2 / Go2-W | `StandDown` | `RecoveryStand` | `Damp` | `Move(vx, vy, wz)` |
+| B2 / B2-W | `StandDown` | `RecoveryStand` | `Damp` | `Move(vx, vy, wz)` |
+| G1 | `Sit`（FSM 3） | `Squat2StandUp`（FSM 706） | `Damp`（FSM 1） | `SetVelocity(vx, vy, wz, 1 s)` |
+| H1 | – | `StandUp`（FSM 2） | `Damp`（FSM 1） | `SetVelocity(vx, vy, wz, 1 s)` |
+
+`RecoveryStand` 能让四足机器人从趴下或阻尼状态站起来，并进入平衡站立，随后就可以行走。
+
+**安全机制**
+
+- **显式解锁**：解锁前不发任何指令；机器人不在线时拒绝解锁。从未解锁过的会话不会发出任何一条指令，退出时也不会发 StopMove。
+- **自动上锁**：按 `Esc`、离开本页、退出程序、Ctrl-C、收到 SIGHUP（例如 SSH 断开）或 SIGTERM，以及机器人离线或数据停止更新时，
+  面板都会自动上锁并让移动中的机器人停下。因此锁定的速度不会在会话结束后继续生效。
+- **防重复触发**：同一个姿态键在 0.65 s 内再次按下会被忽略，按住不放只会触发一次。
+- **阻尼锁**：按 `P` 后速度键被锁住，直到 `X` 站立成功。
+- **发送失败即停**：Move 调用失败时直接清零速度，不会盲目重试。
+- **不阻塞界面**：所有 RPC 调用都在独立的控制线程中执行；返回结果和错误码（例如 `3104 timeout (service not running?)`）显示在日志面板中。
+
+运动服务必须处于运行状态：如果看不到 `rt/sportmodestate` 话题，机器人多半处于底层或调试模式，此时指令会超时。
+
 ## 工作原理
 
 更完整的说明见 [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md)。
@@ -266,7 +328,8 @@ with UnitreeTop(interface="eth1") as ut:       # 参数同命令行：domain、r
 
 - Go2 与 B2（以及 Go2-W 与 B2-W）的 lowstate 结构完全相同，无法自动区分，B2 需要加 `-r b2`。
 - G1/H1-2 的 BMS 字段单位（电压 mV、电流 mA）是根据 SDK IDL 推断的，尚未在真机上核对。没有 BMS 话题时，电池电压用电机母线电压估算。
-- 机器人数据只读，不支持下发命令（这是有意的设计）。
+- 控制只使用高层运动接口，不提供底层（关节级）指令模式。
+- 键盘控制目前只在模拟 RPC 服务上测试过，尚未在真机上运行。
 - 每次只监控一台机器人（一个 DDS domain + 网卡）。
 
 ## 开发与测试
@@ -278,17 +341,22 @@ unitreetop/
 ├── tools/fake_robot.py     # DDS 模拟发布器（go / hg 家族）
 ├── unitreetop/
 │   ├── __main__.py         # 命令行入口
+│   ├── core/control.py     # 键盘控制：后端（SportClient / LocoClient / demo）与发送线程
 │   ├── core/               # 数据采集：system / gpu / robot(DDS) / models / demo
 │   └── gui/                # curses 界面：common（绘图原语、主题）/ pages / 主循环
 └── docs/architecture*.md   # 架构与扩展说明
 ```
 
-没有机器人时测试 DDS 路径：
+没有机器人时，可以这样测试 DDS 和控制链路。`fake_robot.py` 还会提供一个模拟的 `sport` RPC 服务：它打印收到的每条请求，
+并把 Move/SetVelocity 的速度回填到发布的运动状态里。
 
 ```bash
-python3 tools/fake_robot.py --family hg -d 1 -i lo &    # 模拟 G1：29 个关节 + rt/lf/bmsstate
-unitreetop -d 1 -i lo
+python3 tools/fake_robot.py --family go -d 7 -i lo &    # 模拟 Go2：lowstate、sportmodestate、SportClient 接口
+unitreetop -d 7 -i lo -p ctrl                           # Enter 解锁，然后按 W/A/S/D/Q/E/Space/Z/X/P
+python3 tools/fake_robot.py --family hg -d 7 -i lo &    # 模拟 G1：29 个关节、rt/lf/bmsstate、LocoClient 接口
 ```
+
+请使用与真机不同的 domain（这里是 7），确保测试指令不可能发到真实的机器人上。
 
 如何添加新机器人型号或新页面，见 [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md#扩展)。
 
