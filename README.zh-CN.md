@@ -4,113 +4,146 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 ![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue)
-![Platform](https://img.shields.io/badge/platform-Jetson%20%7C%20Linux-lightgrey)
+![Platform](<https://img.shields.io/badge/platform-Jetson%20%7C%20Linux-lightgrey>)
 
-宇树机器人的终端控制台：[jtop](https://github.com/rbonghi/jetson_stats) 风格的监控，[btop](https://github.com/aristocratos/btop) 外观，外加键盘控制面板。
+宇树机器人的终端监控与控制台：结合 [jtop](https://github.com/rbonghi/jetson_stats) 风格的硬件监控与 [btop](https://github.com/aristocratos/btop) 终端UI，内置键盘控制面板。
 
-- **监控**：除主机指标（CPU、GPU、内存、温度、功耗）外，通过 [`unitree_sdk2py`](https://github.com/unitreerobotics/unitree_sdk2_python)（CycloneDDS）实时显示机器人状态：关节、电池/BMS、IMU、足端力、遥控器、运动状态及全部 DDS 话题。
-- **控制**：第 ⁹ 页通过高层 sport/loco API 用键盘控制机器人。未解锁前不发送任何指令，`--no-control` 可彻底关闭。
+- **全维度监控**：除主机指标（CPU、GPU、内存、温度、功耗）外，通过 [`unitree_sdk2py`](https://github.com/unitreerobotics/unitree_sdk2_python)（CycloneDDS）实时呈现机器人状态：关节、电池/BMS、IMU、足端力、遥控器、运动状态及全网 DDS 话题。
+- **高层键盘控制**：第 ⁹ 页支持通过高层 Sport/Loco API 遥控机器人。
 
 ![all](docs/screenshot-all.png)
 ![joints](docs/screenshot-joints.png)
 
-## 支持的机器人
+---
 
-| 型号 | DDS 族 | 关节数 | 控制 API | 状态 |
-|---|---|---|---|---|
-| Go2 | `unitree_go` | 12 | `SportClient` | ✅ 监控已在真机测试 |
-| Go2-W、B2 / B2-W、H1 | `unitree_go` | 16 / 12 / 16、19 | `SportClient` / `LocoClient` | 按 SDK 定义实现 |
-| G1（23/29 自由度）、H1-2 | `unitree_hg` | 23 / 29、27 | `LocoClient`（H1-2 仅监控） | 已用模拟 DDS 数据测试 |
+## 支持型号
 
-控制功能仅在模拟 RPC 服务（`tools/fake_robot.py`）上测试过，**尚未在真机上验证**。Go2 与 B2 的 lowstate 布局相同，B2 请加 `-r b2`。
+| 型号                         | DDS 族         | 关节数  | 控制 API        |
+| :--------------------------- | :------------- | :------ | :-------------- |
+| **Go2**                | `unitree_go` | 12      | `SportClient` |
+| **Go2-W**              | `unitree_go` | 16      | `SportClient` |
+| **B2 / B2-W**          | `unitree_go` | 12 / 16 | `SportClient` |
+| **H1**                 | `unitree_go` | 19      | `LocoClient`  |
+| **G1（23/29 自由度）** | `unitree_hg` | 23 / 29 | `LocoClient`  |
+| **H1-2**               | `unitree_hg` | 27      | 仅监控          |
 
-## 快速开始
+
+## 安装与启动
+
+### 1. 环境依赖
+
+- **必选**：Python >= 3.8、`psutil`、`cyclonedds==0.10.x`（宇树 Jetson 主板通常已预装）。
+- **内置 SDK**：`unitree_sdk2_python` 已作为 Git 子模块打包；设置 `UNITREETOP_SDK=system` 可切换为系统已安装版本。
+- **可选**：`jetson-stats`（Jetson GPU 与功耗详情）、`nvidia-ml-py`（桌面级 NVIDIA 显卡）。
+
+### 2. 快速安装
 
 ```bash
-git clone --recurse-submodules git@github.com:SimonKennethRobo/unitreetop.git ~/Apps/unitreetop
+git clone --recurse-submodules [https://github.com/SimonKennethRobo/unitreetop.git](https://github.com/SimonKennethRobo/unitreetop.git) ~/Apps/unitreetop
 ln -s ~/Apps/unitreetop/bin/unitreetop ~/.local/bin/unitreetop
-unitreetop                          # 在机器人的 Jetson 上
-python3 -m unitreetop --demo -r g1  # 无需机器人
+
+unitreetop                          # 在机器人 Jetson 上直接运行
+python3 -m unitreetop --demo -r g1  # 无真机时使用模拟数据体验
 ```
 
-依赖：Python ≥ 3.8、`psutil`、`cyclonedds==0.10.x`。宇树 SDK 已作为子模块内置（忘记 `--recurse-submodules` 时执行 `git submodule update --init`；`UNITREETOP_SDK=system` 使用系统已安装的版本）。可选：`jetson-stats`（Jetson GPU/功耗）、`nvidia-ml-py`（桌面 GPU）。也可 `pip3 install -e .`（`".[jetson]"` 额外安装 jetson-stats）。
+*(若克隆时遗漏子模块，运行 `git submodule update --init` 补全；也支持通过 `pip3 install -e .` 或 `pip3 install -e ".[jetson]"` 安装。)*
 
-## 用法
+## 使用指南
+
+### 常用命令
 
 ```bash
-unitreetop -i eth1               # 指定网卡（默认选有 192.168.123.x 地址的网卡）
-unitreetop -i enp3s0 -r g1       # 外接 PC 连 G1，强制指定型号
-unitreetop -p joints             # 直接打开某页
-unitreetop --json --wait 3       # 输出一次 JSON 快照后退出
-unitreetop -d 1 -i lo            # unitree_mujoco 仿真
+unitreetop -i eth1               # 指定网卡（默认自动选择 192.168.123.x 所在网卡）
+unitreetop -i enp3s0 -r g1       # 外接 PC 连接 G1，强制指定型号
+unitreetop -p joints             # 启动时直接进入指定页面
+unitreetop --json --wait 3       # 采集 3 秒后输出一次 JSON 快照并退出
+unitreetop -d 1 -i lo            # 连接 unitree_mujoco 仿真器
 ```
 
-主要选项（`unitreetop -h` 查看全部）：
+### 命令行参数
 
-| 选项 | 说明 |
-|---|---|
-| `-i`、`-d` | 网卡与 DDS domain（真机 0，unitree_mujoco 1）；环境变量 `UNITREETOP_IFACE` / `UNITREETOP_DOMAIN` |
-| `-r` | `auto` `go2` `go2w` `b2` `b2w` `h1` `g1` `h1_2` |
-| `-p` | 起始页：`all cpu gpu mem joints imu power info ctrl` |
-| `--no-robot` / `--demo` | 仅主机 / 合成机器人数据 |
-| `--no-control` | 仅监控，绝不发送任何指令 |
-| `--vel-step`、`--max-vx/vy/wz` | 遥控步长与速度上限 |
+| 选项                               | 环境变量              | 默认值   | 说明                                                                                   |
+| :--------------------------------- | :-------------------- | :------- | :------------------------------------------------------------------------------------- |
+| `-i`, `--interface`            | `UNITREETOP_IFACE`  | `auto` | 连接机器人的网络接口                                                                   |
+| `-d`, `--domain`               | `UNITREETOP_DOMAIN` | `0`    | DDS Domain ID（真机为 `0`，MuJoCo 仿真为 `1`）                                     |
+| `-r`, `--robot`                | -                     | `auto` | 强制型号：`go2` `go2w` `b2` `b2w` `h1` `g1` `h1_2`                       |
+| `-p`, `--page`                 | -                     | `all`  | 起始页：`all` `cpu` `gpu` `mem` `joints` `imu` `power` `info` `ctrl` |
+| `--no-robot` / `--demo`        | -                     | -        | 仅监控主机硬件 / 使用合成机器人数据                                                    |
+| `--no-control`                   | -                     | -        | 纯监控模式，彻底屏蔽控制功能                                                           |
+| `--vel-step`、`--max-vx/vy/wz` | -                     | -        | 键盘控制的步长与最大速度限制                                                           |
 
-按键：`1`–`9` / `←` `→` / 鼠标切换页面，`+` `-` 调刷新率，`p` 暂停，`q` 退出；`↑` `↓` 选关节（JOINTS）或滚动话题（INFO），`s` 切换进程排序（CPU），`a` 显示空电机槽（JOINTS）。
+### 界面与快捷键
 
-页面：¹ all、² cpu、³ gpu、⁴ mem、⁵ joints、⁶ imu、⁷ power、⁸ info、⁹ ctrl。JOINTS/IMU 默认 50 Hz（约占 Orin NX 单核 48%），其余 1 Hz（约 8%）。
+- **页面列表**：¹ `all`（总览）、² `cpu`（处理器与进程）、³ `gpu`（显卡与功耗）、⁴ `mem`（内存与网速）、⁵ `joints`（关节详情）、⁶ `imu`（姿态与足端力）、⁷ `power`（电池与电芯）、⁸ `info`（版本与 DDS 话题）、⁹ `ctrl`（键盘控制）。
+- **刷新率与开销**：`JOINTS` 与 `IMU` 默认 **50 Hz**（约占 Orin NX 单核 48%），其余页面默认 **1 Hz**（约占 8%）。
+- **通用操作**：
+  - `1`–`9` / `←` `→` / 鼠标点击顶部菜单：切换页面
+  - `+` / `-`：调整当前页面刷新率
+  - `p` / `q`：暂停刷新 / 退出程序
+- **页面专属**：
+  - **JOINTS**：`↑` `↓` 选择关节查看历史曲线；`a` 显示/隐藏空电机槽
+  - **CPU**：`s` 切换进程排序方式（CPU / 内存 / PID）
+  - **INFO**：`↑` `↓` 滚动 DDS 话题列表
 
-## 键盘控制
+## 键盘控制（第 ⁹ 页）
 
-> ⚠️ 这会让真实机器人运动。请清场，手边备好官方遥控器（或其他急停），人形机器人在摸清行为前请挂在吊架上。
+> ⚠️ **安全警告**：此功能将驱动真实机器人运动！操作前请确保周围无障碍物，随身携带官方遥控器以便随时急停；调试人形机器人时请务必将其悬挂在保护吊架上。
 
-打开第 ⁹ 页，确认机器人 **online**，按 **Enter** 解锁。速度键用于*调整*锁定的速度，与 `go2_keyboard_ctrl` 一致：从零开始第一次按键直接跳到 0.3 m/s（`vx`/`vy`）或 0.5 rad/s（`wz`），之后每次按键增减一个 `--vel-step`；反向键会先减速、过零再反向。速度按型号限幅，非零速度以 10 Hz 发送。
+进入第 ⁹ 页确认机器人状态为 **online** 后，按 **Enter** 解锁控制。速度控制逻辑与 `go2_keyboard_ctrl` 一致（采用速度锁定与步进微调）：
 
-| 按键 | 指令 |
-|---|---|
-| `W` `S` / `A` `D` / `Q` `E` | `vx` / `vy` / `wz` ± 一步 |
-| `Space` | 清零速度（StopMove） |
-| `Z` / `X` | 坐下或趴下 / 站起（同时退出阻尼） |
-| `P` | 阻尼：电机卸力，站立的机器人会倒下 |
-| `Esc` / `Enter` | 上锁 |
+- 静止时首次按下方向键，速度直接跃迁至 `0.3 m/s`（`vx`/`vy`）或 `0.5 rad/s`（`wz`），随后每次按键增减一个 `--vel-step`。
+- 按下反方向键会先减速过零再反向；速度受型号上限约束，非零速度以 10 Hz 持续下发。
 
-**安全机制**：未解锁时不发送任何指令，机器人离线时拒绝解锁。按 `Esc`、离开页面、退出、Ctrl-C、SIGHUP/SIGTERM，或机器人离线/数据过期时，面板自动上锁并停止机器人。按住姿态键只触发一次，`P` 之后速度键保持锁定直到 `X` 成功，Move 失败会清零速度。sport 服务必须在运行；若没有 `rt/sportmodestate`，指令会超时。
+| 按键                                    | 功能                                                           |
+| :-------------------------------------- | :------------------------------------------------------------- |
+| `W` `S` / `A` `D` / `Q` `E` | 增减 `vx`（前后）/ `vy`（左右）/ `wz`（转向）速度        |
+| `Space`                               | 速度归零（`StopMove`）                                       |
+| `Z` / `X`                           | 坐下或趴下 / 站起（同时解除阻尼状态）                          |
+| `P`                                   | **进入阻尼模式**（电机卸力，站立状态下机器人会直接倒下） |
+| `Esc` / `Enter`                     | 立即上锁                                                       |
 
-## JSON 与 Python API
+**内置安全联锁**：
+
+- 未解锁时绝不发包；机器人离线时禁止解锁。
+- 触发 `Esc`、切换页面、退出、Ctrl-C、终端断开（`SIGHUP`/`SIGTERM`）或机器人数据超时，系统会自动上锁并停止机器人。
+- 长按姿态键仅触发一次；触发阻尼（`P`）后速度键将保持锁定，直到站起（`X`）成功；执行 `Move` 失败时速度自动清零。
+- 依赖机器人的 Sport 服务，若未检测到 `rt/sportmodestate` 话题，控制指令将会超时。
+
+## JSON 输出与 Python API
+
+`unitreetop` 提供类似 `jtop` 的上下文管理器接口，方便集成到自定义脚本中：
 
 ```python
 from unitreetop import UnitreeTop
 
-with UnitreeTop(interface="eth1") as ut:       # 参数与命令行一致
+with UnitreeTop(interface="eth1") as ut:       # 参数与命令行选项一致
     while ut.ok():
         r = ut.robot
-        print(ut.cpu["total"], r.battery.soc, r.imu.rpy)
+        print(f"CPU: {ut.cpu['total']}% | SOC: {r.battery.soc}% | RPY: {r.imu.rpy}")
 ```
 
-`--json` 输出 `system`、`gpu`、`robot` 三部分；`ut.history.get(key)` 返回图表背后的环形缓冲。工作原理及如何添加机器人或页面见 [docs/architecture.md](docs/architecture.md)。
+- `--json` 会导出包含 `system`、`gpu`、`robot` 三部分的完整快照。
+- `ut.history.get(key)` 可直接读取图表背后的环形缓冲区数据。
+- 架构设计及新增机器人/页面扩展指南，请参阅 [docs/architecture.md](docs/architecture.md)。
 
 ## 故障排查
 
-| 现象 | 解决 |
-|---|---|
-| 卡在 `waiting for rt/lowstate` | 用 `-i` 指定能连到机器人的网卡（192.168.123.0/24），检查 `-d`；外接 PC 还需检查防火墙是否拦截 UDP 组播 |
-| `CycloneDDS library could not be located` | 编译 CycloneDDS 0.10.x 并设置 `CYCLONEDDS_HOME` |
-| `No module named unitree_sdk2py` | `git submodule update --init` |
-| 型号识别错误 | 用 `-r` 强制指定 |
-| 无 GPU 后端 | Jetson：启动 `jtop.service`；桌面：确认 `nvidia-smi` 可用 |
-| 颜色/符号错乱 | `TERM=xterm-256color`，并使用支持 Unicode 的等宽字体 |
+| 现象                                        | 解决方法                                                                                                                             |
+| :------------------------------------------ | :----------------------------------------------------------------------------------------------------------------------------------- |
+| 卡在 `waiting for rt/lowstate`            | 使用 `-i` 显式指定连向机器人的网卡（`192.168.123.0/24` 网段），确认 `-d` 域 ID 一致；外接 PC 需检查防火墙是否拦截了 UDP 组播。 |
+| `CycloneDDS library could not be located` | 编译安装 CycloneDDS 0.10.x 并设置环境变量 `CYCLONEDDS_HOME`。                                                                      |
+| `No module named unitree_sdk2py`          | 执行 `git submodule update --init` 拉取内置 SDK。                                                                                  |
+| 型号识别错误                                | 通过 `-r` 参数强制指定对应型号（如 `-r b2`）。                                                                                   |
+| 无 GPU 后端信息                             | Jetson 请启动 `jtop.service`；桌面端请确认 `nvidia-smi` 可正常运行。                                                             |
+| 终端颜色或框线字符乱码                      | 设置 `TERM=xterm-256color`，并换用完整支持 Unicode 的等宽字体。                                                                    |
 
-G1/H1-2 的 BMS 单位由 SDK IDL 推断，尚未在真机验证。控制仅使用高层 API（无关节指令），每个实例仅支持一台机器人（一个 DDS domain 和网卡）。
+**已知限制**：G1 / H1-2 的 BMS 单位由 SDK IDL 推断，尚未经真机实测；控制模块仅调用高层 API（不涉及底层关节控制）；单实例仅监控一个 DDS Domain 与网卡。
 
-## 开发
+## 开发与本地测试
 
-无需机器人即可测试，请使用与真机不同的 domain，避免测试指令误达真机：
+可使用内置模拟器在不连接真机的情况下测试完整链路（请务必使用与真机不同的 `-d` domain，防止测试指令误发至真机）：
 
 ```bash
-python3 tools/fake_robot.py --family go -d 7 -i lo &   # 模拟 Go2（G1 用 --family hg）
+python3 tools/fake_robot.py --family go -d 7 -i lo &   # 模拟 Go2（模拟 G1 请用 --family hg）
 unitreetop -d 7 -i lo -p ctrl
 ```
-
-## 许可与致谢
-
-[MIT](LICENSE)；内置的 unitree_sdk2_python 保留其 BSD-3-Clause 许可。感谢 [jetson_stats](https://github.com/rbonghi/jetson_stats)、[btop](https://github.com/aristocratos/btop) 与 [unitree_sdk2_python](https://github.com/unitreerobotics/unitree_sdk2_python)。与宇树科技及 NVIDIA 无关联。

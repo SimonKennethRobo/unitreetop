@@ -4,134 +4,147 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 ![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue)
-![Platform](https://img.shields.io/badge/platform-Jetson%20%7C%20Linux-lightgrey)
+![Platform](<https://img.shields.io/badge/platform-Jetson%20%7C%20Linux-lightgrey>)
 
-A terminal console for Unitree robots: a [jtop](https://github.com/rbonghi/jetson_stats)-style monitor with a
-[btop](https://github.com/aristocratos/btop) look, plus a keyboard control panel.
-
-- **Monitor.** Host metrics (CPU, GPU, memory, temperatures, power) next to live robot state over
-  [`unitree_sdk2py`](https://github.com/unitreerobotics/unitree_sdk2_python) (CycloneDDS): joints, battery/BMS, IMU,
-  foot force, wireless remote, sport state and all DDS topics.
-- **Control.** Page ⁹ drives the robot from the keyboard through the high-level sport/loco API. It sends nothing until
-  you arm it, and `--no-control` disables it completely.
+A terminal monitor for Unitree robots, combining [jtop](https://github.com/rbonghi/jetson_stats)-style host/Jetson metrics with live robot telemetry over [`unitree_sdk2py`](https://github.com/unitreerobotics/unitree_sdk2_python) (CycloneDDS), styled after [btop](https://github.com/aristocratos/btop).
 
 ![all](docs/screenshot-all.png)
 ![joints](docs/screenshot-joints.png)
 
-## Supported robots
+<sub>Captured on a real Go2.</sub>
 
-| Model | DDS family | Joints | Control API | Status |
-|---|---|---|---|---|
-| Go2 | `unitree_go` | 12 | `SportClient` | ✅ monitor tested on a real robot |
-| Go2-W, B2 / B2-W, H1 | `unitree_go` | 16 / 12 / 16, 19 | `SportClient` / `LocoClient` | from SDK definitions |
-| G1 (23/29 DoF), H1-2 | `unitree_hg` | 23 / 29, 27 | `LocoClient` (H1-2: monitor only) | tested on simulated DDS data |
+---
 
-Control has only been tested against a fake RPC service (`tools/fake_robot.py`), **not yet on a real robot**.
-Go2 and B2 publish identical lowstate layouts, so pass `-r b2` for a B2.
+## Features
 
-## Quick start
+- **Host & GPU**: Per-core CPU, memory/swap/disk, network, processes, and temperatures. Supports Jetson (`jtop` / sysfs) and desktop NVIDIA GPUs (NVML / `nvidia-smi`).
+- **Robot Telemetry (Read-Only)**:
+  - **Joints**: Position (`q`), velocity (`dq`), torque (`tau`), temperature, mode, packet loss/error bits, and real-time history graphs.
+  - **Battery & Power**: SOC, voltage, current, power, cycles, SOH, cell voltages/spread, and board bus/NTC/fan stats.
+  - **Motion & Control**: IMU (RPY, quaternion, gyro, accel), foot force, wireless remote sticks/buttons, and `SportModeState`.
+  - **DDS Inspector**: Live discovery and frequency (Hz) measurement of all DDS topics on the network.
+- **Zero-Config Discovery**: Auto-detects the robot network NIC (`192.168.123.x`), DDS message family, and robot model.
+- **Low Overhead**: ~8% of a single core at 1 Hz on a Go2 Orin NX.
+- **Self-Contained & Scriptable**: Bundles `unitree_sdk2_python` as a submodule; includes a Python API, one-shot JSON export, and a demo mode.
+
+## Supported Robots
+
+| Model                    | DDS Family     | Joints  | Status                                             |
+| :----------------------- | :------------- | :------ | :------------------------------------------------- |
+| **Go2**            | `unitree_go` | 12      | Verified on hardware                               |
+| **Go2-W**          | `unitree_go` | 16      | Implemented from SDK                               |
+| **B2 / B2-W**      | `unitree_go` | 12 / 16 | Implemented from SDK (pass `-r b2` / `-r b2w`) |
+| **H1**             | `unitree_go` | 19      | Implemented from SDK                               |
+| **G1 (23/29 DoF)** | `unitree_hg` | 23 / 29 | Verified in simulation                             |
+| **H1-2**           | `unitree_hg` | 27      | Verified in simulation                             |
+
+## Installation
+
+### Prerequisites
+
+- **Required**: Python >= 3.8, `psutil`, `cyclonedds==0.10.x` (usually pre-installed on Unitree Jetson boards; otherwise `pip3 install cyclonedds==0.10.2`).
+- **Optional**: `jetson-stats` (with `jtop.service` active) for full Jetson metrics; `nvidia-ml-py` for desktop GPUs.
+
+### Install from Source (Recommended)
 
 ```bash
-git clone --recurse-submodules git@github.com:SimonKennethRobo/unitreetop.git ~/Apps/unitreetop
+git clone --recurse-submodules https://github.com/SimonKennethRobo/unitreetop.git ~/Apps/unitreetop
 ln -s ~/Apps/unitreetop/bin/unitreetop ~/.local/bin/unitreetop
-unitreetop                          # on the robot's Jetson
-python3 -m unitreetop --demo -r g1  # no robot needed
+ln -s ~/Apps/unitreetop/bin/unitreetop ~/.local/bin/untop   # optional alias
 ```
 
-Requirements: Python ≥ 3.8, `psutil`, `cyclonedds==0.10.x`. The Unitree SDK is bundled as a submodule
-(`git submodule update --init` if you forgot `--recurse-submodules`; `UNITREETOP_SDK=system` uses the installed one).
-Optional: `jetson-stats` (Jetson GPU/power), `nvidia-ml-py` (desktop GPUs). Or install with
-`pip3 install -e .` (`".[jetson]"` adds jetson-stats).
+*(If you already cloned without `--recurse-submodules`, run `git submodule update --init`.)*
+
+Alternatively, install via pip:
+
+```bash
+pip3 install -e .            # or pip3 install -e ".[jetson]"
+```
 
 ## Usage
 
 ```bash
-unitreetop -i eth1               # explicit NIC (default: the one with a 192.168.123.x address)
-unitreetop -i enp3s0 -r g1       # external PC cabled to a G1, model forced
-unitreetop -p joints             # open a page directly
-unitreetop --json --wait 3       # one JSON snapshot and exit
-unitreetop -d 1 -i lo            # unitree_mujoco simulator
+unitreetop                       # Auto-detect NIC (192.168.123.x) & robot model
+unitreetop -i eth1               # Specify network interface (Go2 dock is usually eth1)
+unitreetop -i enp3s0 -r g1       # External PC connected to G1
+unitreetop -p joints             # Launch directly into the JOINTS page
+unitreetop --demo -r g1          # Run with synthetic data (no robot needed)
+unitreetop -d 1 -i lo            # Connect to unitree_mujoco simulator (domain 1)
+unitreetop --json --wait 3       # Print a single JSON snapshot and exit
 ```
 
-Main options (`unitreetop -h` lists all):
+### CLI Options & Env Vars
 
-| Option | Description |
-|---|---|
-| `-i`, `-d` | NIC and DDS domain (robot: 0, unitree_mujoco: 1); env `UNITREETOP_IFACE` / `UNITREETOP_DOMAIN` |
-| `-r` | `auto` `go2` `go2w` `b2` `b2w` `h1` `g1` `h1_2` |
-| `-p` | start page: `all cpu gpu mem joints imu power info ctrl` |
-| `--no-robot` / `--demo` | host only / synthetic robot data |
-| `--no-control` | monitor only, no command is ever sent |
-| `--vel-step`, `--max-vx/vy/wz` | teleop step and velocity caps |
+| Option                    | Env Var               | Default         | Description                                                                              |
+| :------------------------ | :-------------------- | :-------------- | :--------------------------------------------------------------------------------------- |
+| `-i`, `--interface`   | `UNITREETOP_IFACE`  | `auto`        | Network interface on the robot subnet                                                    |
+| `-d`, `--domain`      | `UNITREETOP_DOMAIN` | `0`           | DDS domain ID (`0` for real robot, `1` for MuJoCo)                                   |
+| `-r`, `--robot`       | -                     | `auto`        | Force model: `go2`, `go2w`, `b2`, `b2w`, `h1`, `g1`, `h1_2`                |
+| `-p`, `--page`        | -                     | `all`         | Start page: `all`, `cpu`, `gpu`, `mem`, `joints`, `imu`, `power`, `info` |
+| `--gpu`                 | -                     | `auto`        | GPU backend: `auto`, `jtop`, `tegra`, `nvidia`, `none`                         |
+| `--lowstate-topic`      | -                     | `rt/lowstate` | Lowstate topic (e.g., `rt/lf/lowstate` for low-rate mirror)                            |
+| `--no-robot`            | -                     | -               | Monitor host metrics only                                                                |
+| `--demo`                | -                     | -               | Generate synthetic robot telemetry                                                       |
+| `--json` / `--wait N` | -                     | `2s`          | Collect for `N` seconds, output JSON, and exit                                         |
 
-Keys: `1`–`9` / `←` `→` / mouse switch page, `+` `-` refresh rate, `p` pause, `q` quit; `↑` `↓` select a joint (JOINTS)
-or scroll topics (INFO), `s` sorts processes (CPU), `a` shows empty motor slots (JOINTS).
+> **Tip**: Set `UNITREETOP_SDK=system` to use your system-installed `unitree_sdk2py` instead of the bundled submodule.
 
-Pages: ¹ all, ² cpu, ³ gpu, ⁴ mem, ⁵ joints, ⁶ imu, ⁷ power, ⁸ info, ⁹ ctrl. JOINTS/IMU refresh at 50 Hz by default
-(about 48% of one Orin NX core), the rest at 1 Hz (about 8%).
+### Controls & Pages
 
-## Keyboard control
+- **Navigation**: `1`-`8`, `Left`/`Right`, `Tab`, or mouse click on the top bar. (`q` / `Esc` to quit, `p` to pause).
+- **Refresh Rate**: `+` / `-` adjusts the current page's rate (`JOINTS` & `IMU` default to **50 Hz**; other pages default to **1 Hz**).
+- **Page Shortcuts**:
+  - `1` **all**: Overview of CPU, memory, GPU, power, robot status, battery, IMU, and joints.
+  - `2` **cpu**: Per-core load/clocks and process list (`s` to cycle sort: CPU / Mem / PID).
+  - `3` **gpu**: GPU clocks, power rails, thermals, fan, `nvpmodel`, and hardware engines.
+  - `4` **mem**: Memory/swap history and robot NIC bandwidth graphs.
+  - `5` **joints**: Full joint telemetry (`Up`/`Down` to select joint for history graph; `a` to toggle inactive slots).
+  - `6` **imu**: Orientation, rates, acceleration, `SportModeState`, foot forces, and remote inputs.
+  - `7` **power**: Detailed BMS metrics, individual cell voltages, and power graphs.
+  - `8` **info**: Software versions, active SDK path, and all discovered DDS topics (`Up`/`Down` to scroll).
 
-> ⚠️ This moves a real robot. Clear the area, keep the official remote (or another e-stop) at hand, and keep humanoids
-> on a gantry until you know how they behave.
+## Python API
 
-Open page ⁹, check that the robot is **online**, press **Enter** to arm. Velocity keys *adjust* a locked velocity, as in
-`go2_keyboard_ctrl`: the first press from zero jumps to 0.3 m/s (`vx`/`vy`) or 0.5 rad/s (`wz`), each further press adds
-one `--vel-step`; the opposite key slows down through zero. Speeds are capped per model, and a non-zero velocity is sent
-at 10 Hz.
-
-| Key | Command |
-|---|---|
-| `W` `S` / `A` `D` / `Q` `E` | `vx` / `vy` / `wz` ± one step |
-| `Space` | clear velocity (StopMove) |
-| `Z` / `X` | sit or lie down / stand up (also leaves damping) |
-| `P` | damp: motors go limp, a standing robot will fall |
-| `Esc` / `Enter` | disarm |
-
-**Safety.** Nothing is sent until armed, and arming is refused while the robot is offline. The panel disarms and stops
-the robot on `Esc`, leaving the page, quit, Ctrl-C, SIGHUP/SIGTERM, or when the robot goes offline or stale. Held
-posture keys fire once, velocity keys stay locked after `P` until `X` succeeds, and a failed Move clears the velocity.
-The sport service must be running; if `rt/sportmodestate` is missing, commands will time out.
-
-## JSON and Python API
+`unitreetop` exposes a `jtop`-like context manager for scripting and logging:
 
 ```python
 from unitreetop import UnitreeTop
 
-with UnitreeTop(interface="eth1") as ut:       # same options as the CLI
+with UnitreeTop(interface="eth1") as ut:
     while ut.ok():
         r = ut.robot
-        print(ut.cpu["total"], r.battery.soc, r.imu.rpy)
+        print(f"CPU: {ut.cpu['total']}% | SOC: {r.battery.soc}% | RPY: {r.imu.rpy}")
+        for m in r.active_motors:
+            if m.temp > 70:
+                print(f"Warning: {m.name} at {m.temp} C")
 ```
 
-`--json` prints `system`, `gpu` and `robot` sections; `ut.history.get(key)` returns the ring buffers behind the graphs.
-See [docs/architecture.md](docs/architecture.md) for how it works and how to add robots or pages.
+Access ring-buffer history via `ut.history.get(key)` (e.g., `cpu`, `ram`, `gpu0`, `board_power`, `roll`, `bat_power`, `q0`, `tau0`).
 
 ## Troubleshooting
 
-| Symptom | Fix |
-|---|---|
-| stuck at `waiting for rt/lowstate` | pass `-i` with the NIC that reaches the robot (192.168.123.0/24), check `-d`, and on an external PC the multicast firewall |
-| `CycloneDDS library could not be located` | build CycloneDDS 0.10.x and set `CYCLONEDDS_HOME` |
-| `No module named unitree_sdk2py` | `git submodule update --init` |
-| wrong model | force it with `-r` |
-| no GPU backend | Jetson: start `jtop.service`; desktop: make sure `nvidia-smi` works |
-| garbled colors/symbols | `TERM=xterm-256color` and a Unicode monospace font |
+| Issue                                       | Solution                                                                                                                                                     |
+| :------------------------------------------ | :----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Stuck at `waiting for rt/lowstate`        | Pass `-i <iface>` explicitly; verify the NIC has a `192.168.123.x` IP, `-d` matches the robot's domain, and UDP multicast isn't blocked by a firewall. |
+| `CycloneDDS library could not be located` | Build CycloneDDS 0.10.x and export `CYCLONEDDS_HOME=<install_prefix>`.                                                                                     |
+| `No module named unitree_sdk2py`          | Run `git submodule update --init` to pull the bundled SDK.                                                                                                 |
+| B2 detected as Go2                          | Both share identical DDS message layouts; pass `-r b2` (or `-r b2w`).                                                                                    |
+| Bad colors or broken box characters         | Ensure `TERM=xterm-256color` and use a Nerd Font / Unicode-complete monospace font.                                                                        |
+| High CPU usage                              | Lower the refresh rate with `-` or switch to the `all` page (1 Hz) for background monitoring.                                                            |
 
-G1/H1-2 BMS units are inferred from the SDK IDL and not yet verified on a real robot. Control uses the high-level API
-only (no joint commands), and one robot (one DDS domain and NIC) is supported per instance.
+## Known Limitations
 
-## Development
+- **Read-only**: Never publishes commands to the robot.
+- **Single robot**: Monitors one DDS domain/interface per instance.
+- **G1 / H1-2 BMS**: Battery scaling (mV / mA) is inferred from SDK IDL definitions and falls back to motor bus voltage if no `BmsState_` topic is present.
 
-Test without a robot, on a domain other than the robot's so commands can never reach real hardware:
+## Development & Architecture
+
+See [docs/architecture.md](docs/architecture.md) for internals and instructions on adding new robot models or UI pages.
+
+To test the full DDS pipeline locally without hardware:
 
 ```bash
-python3 tools/fake_robot.py --family go -d 7 -i lo &   # fake Go2 (--family hg for a G1)
-unitreetop -d 7 -i lo -p ctrl
+python3 tools/fake_robot.py --family hg -d 1 -i lo &
+unitreetop -d 1 -i lo
 ```
-
-## License and credits
-
-[MIT](LICENSE); the bundled unitree_sdk2_python keeps its BSD-3-Clause license. Thanks to
-[jetson_stats](https://github.com/rbonghi/jetson_stats), [btop](https://github.com/aristocratos/btop) and
-[unitree_sdk2_python](https://github.com/unitreerobotics/unitree_sdk2_python). Not affiliated with Unitree Robotics or NVIDIA.
