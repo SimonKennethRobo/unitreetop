@@ -11,6 +11,8 @@ class DemoLink:
         self.model = MODELS.get(robot if robot != "auto" else "go2", MODELS["go2"])
         self._t0 = time.monotonic()
         self._tick = 0
+        self.cmd_vel = (0.0, 0.0, 0.0)   # set by the demo teleop backend
+        self.posture = "standing"
 
     def start(self):
         pass
@@ -44,8 +46,12 @@ class DemoLink:
         st.battery = Battery(True, soc, 25.2 + 4.2 * soc / 100, -3.5 - 2 * math.sin(t), 37, 98, 8,
                              [33, 32, 36, 35], [3.15 + 0.52 * soc / 100 + 0.004 * k for k in range(8)],
                              "1.18", "(demo)")
-        st.sport = Sport(True, 1, 1, 0, 0.32, [math.cos(t / 5), math.sin(t / 5), 0.32],
-                         [0.4 * math.cos(t / 3), 0.0, 0.0], 0.2, "(demo)")
+        vx, vy, wz = self.cmd_vel
+        mode = {"standing": 1, "lying": 5, "damped": 0}.get(self.posture, 1)
+        st.sport = Sport(True, mode, 1 if any(self.cmd_vel) else 0, 0,
+                         {"standing": 0.32, "lying": 0.08, "damped": 0.05}.get(self.posture, 0.32),
+                         [math.cos(t / 5), math.sin(t / 5), 0.32], [vx, vy, 0.0], wz,
+                         "(demo, {})".format(self.posture))
         st.foot_force = [int(80 + 60 * math.sin(t * 4 + k * math.pi / 2)) for k in range(4)]
         st.remote = Remote(True, math.sin(t), math.cos(t), 0.0, 0.3, ["A"] if int(t) % 3 == 0 else [])
         st.board = {"bus voltage": "{:.2f} V".format(st.battery.voltage), "fan": "0, 0, 0, 0"}

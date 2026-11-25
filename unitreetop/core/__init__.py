@@ -18,7 +18,8 @@ from .system import SystemStats
 
 class UnitreeTop:
     def __init__(self, interface=None, domain=0, robot="auto", interval=0.5, robot_hz=20.0,
-                 gpu="auto", demo=False, no_robot=False, lowstate_topic=None):
+                 gpu="auto", demo=False, no_robot=False, lowstate_topic=None,
+                 control=True, vel_step=0.1, max_vel=None):
         self.interval = interval
         self.robot_hz = robot_hz        # current snapshot rate (the GUI raises it for fast pages)
         self.robot_hz_base = robot_hz   # floor, keeps history sampling sane on slow pages
@@ -35,6 +36,12 @@ class UnitreeTop:
             self._link = DemoLink(robot)
         else:
             self._link = RobotLink(interface, domain, robot, lowstate_topic)
+        # teleop is created lazily, the first time the operator arms the control page
+        self.control_enabled = control and not no_robot
+        self.vel_step = vel_step
+        self.max_vel = max_vel or {}
+        self.teleop = None
+        self.teleop_error = "" if self.control_enabled else "control disabled (--no-control)"
         self.stats = {}
         self.gpu_stats = {}
         self.robot = RobotState()
@@ -68,7 +75,25 @@ class UnitreeTop:
         for t in self._threads:
             t.start()
 
+    def get_teleop(self):
+        """Return the Teleop controller, creating the SDK client on first use (or None + teleop_error)."""
+        if self.teleop is not None or not self.control_enabled:
+            return self.teleop
+        from .control import Teleop, make_backend
+        from .demo import DemoLink
+        demo_link = self._link if isinstance(self._link, DemoLink) else None
+        model = self.robot.model.key if self.robot.model else None
+        backend, err = make_backend(model, demo_link)
+        if backend is None:
+            self.teleop_error = err
+            return None
+        self.teleop_error = ""
+        self.teleop = Teleop(backend, limits=self.max_vel, step=self.vel_step)
+        return self.teleop
+
     def close(self):
+        if self.teleop is not None:
+            self.teleop.close()  # disarm -> StopMove if it was armed
         self._running = False
         if self._link is not None:
             self._link.stop()
@@ -139,6 +164,9 @@ class UnitreeTop:
             if self._link is not None:
                 st = self._link.snapshot()
                 self.robot = st
+                tp = self.teleop
+                if tp is not None and tp.armed and not st.online:
+                    tp.disarm("robot {} - disarmed".format(st.status))
                 if st.online:
                     h = self.history
                     for k, v in zip(("roll", "pitch", "yaw"), st.imu.rpy):

@@ -1,6 +1,7 @@
 """Curses front-end (header + pages + tab bar), modelled on jtop's UI."""
 import curses
 import locale
+import os
 import time
 
 from .common import SUPERSCRIPT, bg, c, grad, init_colors, put, set_dims, uptime
@@ -33,7 +34,14 @@ class UnitreeTopGUI:
         return self.pages[self.page]
 
     def _apply_rate(self):
-        """Robot snapshots follow the screen rate so a 100 Hz page shows 100 Hz data."""
+        """Robot snapshots follow the screen rate so a 100 Hz page shows 100 Hz data.
+
+        Also the single place where page changes are noticed: the page being left
+        gets on_leave() (the control page disarms and stops there)."""
+        shown = getattr(self, "_shown", self.page)
+        if shown != self.page:
+            self.pages[shown].on_leave()
+        self._shown = self.page
         self.ut.robot_hz = max(self.ut.robot_hz_base, self.cur.hz)
         self._next_draw = 0.0
         self._last_frame = None
@@ -63,6 +71,9 @@ class UnitreeTopGUI:
             if ch == -1:
                 continue
             page_before = self.page
+            if self.cur.capture(ch):  # e.g. the armed control page owns w/a/s/d/q/e/z/x/p/Esc
+                self.draw()
+                continue
             if ch in (ord("q"), ord("Q"), 27):
                 return
             if ord("1") <= ch <= ord("9") and ch - ord("1") < len(self.pages):
@@ -174,7 +185,7 @@ class UnitreeTopGUI:
         p = self.cur
         items = [("+-", "{:g}Hz".format(p.hz) + ("(~{:.0f})".format(self._fps)
                                                   if self._fps and self._fps < p.hz * 0.9 else ""))]
-        items += list(p.help()) + [("p", "pause"), ("q", "quit")]
+        items += list(p.help()) + ([] if getattr(p, "modal", False) else [("p", "pause"), ("q", "quit")])
         text_len = sum(len(k) + len(t) + 3 for k, t in items)
         hx = max(x + 2, w - text_len - 1)
         for k, t in items:
@@ -186,4 +197,6 @@ class UnitreeTopGUI:
 
 def run_gui(ut, start_page=0):
     locale.setlocale(locale.LC_ALL, "")
+    # ncurses waits up to 1 s after Esc to tell it from an escape sequence; Esc disarms teleop
+    os.environ.setdefault("ESCDELAY", "25")
     curses.wrapper(lambda scr: UnitreeTopGUI(scr, ut, start_page).run())

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "unitreetop"
 version = "0.1.0"
-description = "jtop-style terminal monitor for Unitree robots (Go2/B2/H1/G1/H1-2): CPU/GPU + joints, battery, IMU over unitree_sdk2"
+description = "btop/jtop-style terminal console for Unitree robots (Go2/B2/H1/G1/H1-2): host + robot monitoring (joints, battery, IMU) and keyboard teleop over unitree_sdk2"
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }

@@ -26,7 +26,15 @@ class Page:
         self.ut = ut
 
     def key(self, ch):
+        """Page-specific key, handled after the global keys."""
         return False
+
+    def capture(self, ch):
+        """Key handled *before* the global keys (return True to consume it)."""
+        return False
+
+    def on_leave(self):
+        pass
 
     def draw(self, win, y, x, h, w):
         raise NotImplementedError
@@ -745,5 +753,201 @@ class InfoPage(Page):
             put(win, iy + i, ix + 2, "{:<34}".format(t), c("title", True) if sub else c("main_fg"), maxw=iw - 2)
             put(win, iy + i, ix + 37, short, c("graph_text"), maxw=max(0, iw - 37))
 
+# ----------------------------------------------------------------------------
+# 9 CTRL - keyboard teleop
+# ----------------------------------------------------------------------------
 
-PAGES = [AllPage, CpuPage, GpuPage, SysPage, JointPage, ImuPage, PowerPage, InfoPage]
+KEY_ENTER = (10, 13, curses.KEY_ENTER)
+UNITS = {"vx": "m/s", "vy": "m/s", "wz": "rad/s"}
+
+
+class CtrlPage(Page):
+    name = "ctrl"
+    hz, hz_step, hz_min, hz_max = 20.0, 5.0, 5.0, 50.0
+
+    def __init__(self, ut):
+        Page.__init__(self, ut)
+        self.msg = ""
+
+    @property
+    def modal(self):
+        """While armed the page owns p/q/Esc, so the menu must not advertise pause/quit."""
+        tp = self.ut.teleop
+        return tp is not None and tp.armed
+
+    def help(self):
+        if self.modal:
+            return [("Esc", "disarm"), ("spc", "clear"), ("P", "damp")]
+        return [("Enter", "arm")]
+
+    # -- keys --------------------------------------------------------------
+    def capture(self, ch):
+        tp = self.ut.teleop
+        armed = tp is not None and tp.armed
+        if ch in KEY_ENTER:
+            self._toggle()
+            return True
+        if not armed:
+            return False  # disarmed: q quits, p pauses, as everywhere else
+        if ch < 0 or ch > 255:
+            return False
+        k = chr(ch)
+        if k.lower() in "wasdqe":
+            tp.drive(k.lower())
+        elif k == " ":
+            tp.stop()
+        elif k.lower() == "z":
+            tp.action("sit")
+        elif k.lower() == "x":
+            tp.action("stand")
+        elif k.lower() == "p":
+            tp.action("damp")
+        elif ch == 27:
+            tp.disarm()
+        else:
+            return False
+        return True
+
+    def _toggle(self):
+        ut = self.ut
+        tp = ut.teleop
+        if tp is not None and tp.armed:
+            tp.disarm()
+            return
+        if not ut.robot.online:
+            self.msg = "robot is {} - cannot arm".format(ut.robot.status)
+            return
+        tp = ut.get_teleop()
+        if tp is None:
+            self.msg = ut.teleop_error
+            return
+        self.msg = ""
+        tp.arm()
+
+    def on_leave(self):
+        tp = self.ut.teleop
+        if tp is not None and tp.armed:
+            tp.disarm("left control page - disarmed")
+
+    # -- drawing -----------------------------------------------------------
+    def draw(self, win, y, x, h, w):
+        ut, r = self.ut, self.ut.robot
+        tp = ut.teleop
+        armed = tp is not None and tp.armed
+        lw = w // 2 + 4 if w >= 110 else w
+        # control state
+        ch = 15
+        backend = tp.backend.name if tp is not None else ("not connected" if ut.control_enabled else "disabled")
+        iy, ix, ih, iw = panel(win, y, x, ch, lw, "control", 9, "proc_box", backend)
+        if ih > 0:
+            if armed:
+                put(win, iy, ix, "  ● ARMED  ", bg("title", "crit") | curses.A_BOLD)
+                put(win, iy, ix + 13, "keys drive the robot · Esc / Enter to disarm", c("crit", True), maxw=iw - 13)
+            else:
+                put(win, iy, ix, "  ○ DISARMED  ", bg("title", "inactive_fg") | curses.A_BOLD)
+                hint = self.msg or ut.teleop_error or "press Enter to arm"
+                put(win, iy, ix + 16, hint, c("warn", True) if self.msg else c("graph_text"), maxw=iw - 16)
+            mdl = r.model.name if r.model else "robot"
+            put(win, iy + 2, ix, "● ", status_attr(r.status))
+            put(win, iy + 2, ix + 2, "{} {}".format(mdl, r.status), status_attr(r.status))
+            if r.battery.valid:
+                put(win, iy + 2, ix + 22, "BAT ", c("graph_text"))
+                put(win, iy + 2, ix + 26, "{:.0f}%".format(r.battery.soc), grad("battery", r.battery.soc / 100.0))
+            if r.sport.valid:
+                put(win, iy + 2, ix + 33, "mode {} gait {} h {:.2f}m".format(r.sport.mode, r.sport.gait,
+                                                                             r.sport.body_height),
+                    c("main_fg"), maxw=iw - 33)
+            subtitle(win, iy + 4, ix, iw, "locked velocity", "proc_box")
+            for i, a in enumerate(("vx", "vy", "wz")):
+                yy = iy + 5 + i
+                lim = tp.limits[a] if tp is not None else 0.0
+                v = tp.cmd[a] if tp is not None else 0.0
+                n = tp.steps[a] if tp is not None else 0
+                put(win, yy, ix, "{:<3}".format(a), c("main_fg"))
+                put(win, yy, ix + 4, "{:>+6.2f}".format(v), c("title", True) if v else c("graph_text"))
+                put(win, yy, ix + 11, "{:<5}".format(UNITS[a]), c("graph_text"))
+                put(win, yy, ix + 17, "{:>+3d}".format(n), c("warn") if n else c("graph_text"))
+                smeter(win, yy, ix + 22, max(5, iw - 22), v, lim or 1.0)
+            if tp is not None:
+                put(win, iy + 9, ix, "step {:.2f} · cap {:.1f}/{:.1f}/{:.1f} · {} Move sent".format(
+                    tp.step, tp.limits["vx"], tp.limits["vy"], tp.limits["wz"], tp.sent), c("graph_text"), maxw=iw)
+                if tp.damped:
+                    put(win, iy + 10, ix, "DAMPED - velocity keys locked until X (stand) succeeds",
+                        c("warn", True), maxw=iw)
+                else:
+                    put(win, iy + 10, ix, tp.last_move or "-", c("graph_text"), maxw=iw)
+            if r.sport.valid:
+                sv = r.sport
+                subtitle(win, iy + 11, ix, iw, "measured · " + sv.source.strip("()"), "proc_box")
+                put(win, iy + 12, ix, "vx {:+.2f}  vy {:+.2f}  wz {:+.2f}   pos ({:+.2f}, {:+.2f})".format(
+                    sv.velocity[0], sv.velocity[1], sv.yaw_speed, sv.position[0], sv.position[1]),
+                    c("main_fg"), maxw=iw)
+            else:
+                subtitle(win, iy + 11, ix, iw, "measured", "proc_box")
+                put(win, iy + 12, ix, "no sportmodestate published (sport service off?)", c("inactive_fg"), maxw=iw)
+        # log
+        ly = y + ch
+        iy, ix, ih, iw = panel(win, ly, x, h - ch, lw, "log", None, "div_line")
+        entries = list(tp.log) if tp is not None else []
+        if not entries and ih > 0:
+            put(win, iy, ix, "commands and robot replies appear here", c("inactive_fg"), maxw=iw)
+        for i, (ts, text, ok) in enumerate(entries[:max(ih, 0)]):
+            put(win, iy + i, ix, ts, c("graph_text"))
+            put(win, iy + i, ix + 9, text, c("main_fg") if ok else c("crit", True), maxw=iw - 9)
+        # keyboard
+        if lw < w:
+            self._keys(win, y, x + lw, h, w - lw, tp, armed)
+
+    def _keys(self, win, y, x, h, w, tp, armed):
+        iy, ix, ih, iw = panel(win, y, x, h, w, "keys", None, "robot_box",
+                               "velocity lock" if armed else "disarmed")
+        if ih < 12:
+            return
+        active = tp.active_keys() if armed else set()
+        labels = tp.backend.labels if tp is not None else {"sit": "sit / lie down", "stand": "stand up",
+                                                           "damp": "damp"}
+
+        def key(yy, xx, k, label, hot=False):
+            if armed and (k.lower() in active or hot):
+                a, frame = bg("title", "selected_bg") | curses.A_BOLD, c("crit")
+            elif armed:
+                a, frame = c("title", True), c("robot_box")
+            else:
+                a, frame = c("inactive_fg"), c("div_line")
+            kw = max(5, len(k) + 4)
+            put(win, yy, xx, "╭" + "─" * (kw - 2) + "╮", frame)
+            put(win, yy + 1, xx, "│", frame)
+            put(win, yy + 1, xx + 1, k.center(kw - 2), a)
+            put(win, yy + 1, xx + kw - 1, "│", frame)
+            put(win, yy + 2, xx, "╰" + "─" * (kw - 2) + "╯", frame)
+            if label:
+                put(win, yy + 3, xx, label[:max(kw, 9)].center(kw), c("graph_text") if armed else c("inactive_fg"))
+            return kw
+
+        bx = ix + 2
+        key(iy, bx, "Q", "yaw +")
+        key(iy, bx + 7, "W", "vx +")
+        key(iy, bx + 14, "E", "yaw -")
+        key(iy + 4, bx, "A", "vy +")
+        key(iy + 4, bx + 7, "S", "vx -")
+        key(iy + 4, bx + 14, "D", "vy -")
+        key(iy + 8, bx, "Z", "")
+        key(iy + 8, bx + 7, "X", "")
+        key(iy + 8, bx + 14, "P", "")
+        put(win, iy + 11, bx, "Z ", c("hi_fg", True))
+        put(win, iy + 11, bx + 2, labels.get("sit", "-"), c("main_fg"), maxw=iw - 4)
+        put(win, iy + 12, bx, "X ", c("hi_fg", True))
+        put(win, iy + 12, bx + 2, labels.get("stand", "-"), c("main_fg"), maxw=iw - 4)
+        put(win, iy + 13, bx, "P ", c("hi_fg", True))
+        put(win, iy + 13, bx + 2, labels.get("damp", "-") + "  (motors go limp - robot may fall)", c("warn"),
+            maxw=iw - 4)
+        tx = bx + 24
+        if tx + 20 < ix + iw:
+            rows = [("Enter", "arm / disarm"), ("Space", "clear velocity"), ("Esc", "disarm"),
+                    ("W/S..", "+/- one step"), ("1-8", "leave page = disarm")]
+            for i, (k, t) in enumerate(rows):
+                put(win, iy + 1 + 2 * i, tx, "{:<6}".format(k), c("hi_fg", True))
+                put(win, iy + 1 + 2 * i, tx + 7, t, c("main_fg"), maxw=ix + iw - tx - 7)
+
+
+PAGES = [AllPage, CpuPage, GpuPage, SysPage, JointPage, ImuPage, PowerPage, InfoPage, CtrlPage]

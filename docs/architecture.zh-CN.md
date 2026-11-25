@@ -35,6 +35,7 @@
 | `core/gpu.py` | GPU/板卡后端：`JtopBackend`、`TegraBackend`、`NvidiaBackend`（NVML / nvidia-smi）、`NullBackend`，所有后端的 `read()` 返回相同结构 |
 | `core/models.py` | 机器人型号表（DDS 家族、关节名，`None` 表示空槽位）、`guess_model()`、遥控器按键定义 |
 | `core/robot.py` | `RobotLink`：DDS 发现、订阅与快照；`RobotState` 等数据类；遥控器 40 字节数据解析 |
+| `core/control.py` | 键盘控制：`Backend` 的各个实现（go2/b2 用 `SportBackend`，g1/h1 用 `LocoBackend`，以及 `DemoBackend`），和 `Teleop` 状态机及其发送线程 |
 | `core/demo.py` | `DemoLink`：合成数据，接口与 `RobotLink` 相同 |
 | `_sdk.py` | 让内置的 `third_party/unitree_sdk2_python`（submodule）优先于系统安装的 SDK；`UNITREETOP_SDK=system` 可关闭 |
 | `core/__init__.py` | `UnitreeTop`：组织两个采集线程，管理历史缓冲，提供 `ok()` 和 `as_dict()` |
@@ -82,6 +83,37 @@
 原始字段的换算在 `RobotLink._fill_go()` 和 `RobotLink._fill_hg()` 中完成：
 - go 家族：BMS 的 `current` 和 `cell_vol` 单位是 mA、mV，电压取 `power_v`。
 - hg 家族：`bmsvoltage[0]` 大于 1000 时按 mV 处理。
+
+## 键盘控制
+
+`UnitreeTop.get_teleop()` 采用延迟创建：直到操作者第一次在第 ⁹ 页解锁时才创建控制器。因此纯监控的会话里根本不会创建 SDK 的 RPC 客户端。
+
+```
+ 界面线程（CtrlPage.capture）                        utop-teleop 线程（Teleop._loop）
+ ─────────────────────────────                       ─────────────────────────────────
+ Enter ──▶ get_teleop() / arm()                      先执行队列中的任务："stop"（移动中则发 StopMove），
+ w/s a/d q/e ──▶ drive()：档位 ±1                      然后是 "sit" / "stand" / "damp"
+   （从 0 开始时跳到 START_STEPS；按上限限幅）       锁定速度不为 0 时：每 0.1 s 发一次 Move
+ space ──▶ stop()：档位清零，加入 "stop"               回到 0 时：只发一次 StopMove
+ z/x/p ──▶ action()：先清零，再加入姿态指令          Move 失败：清零速度
+   （同一按键 0.65 s 内重复则忽略；p 置 damped，     每条返回都写入日志（0 成功，31xx/32xx 为 RPC 错误）
+    之后速度键被锁住，直到 x 成功）
+ Esc / 切换页面 / 退出 / SIGHUP ──▶ disarm()
+```
+
+其它保证：
+
+- `UnitreeTop._robot_loop` 发现机器人不在线时会自动上锁。
+- `UnitreeTop.close()`（退出、Ctrl-C、SIGHUP、SIGTERM）会上锁并等待最后一条 StopMove 发出。
+- `stop()` 和 `disarm()` 在未解锁时什么都不做，所以从未解锁过的会话不会发出任何指令。
+
+界面为此给页面提供了两个钩子：
+
+- `Page.capture(ch)` 在全局按键处理**之前**运行。解锁状态下，控制页用它接管 `q`、`p`、`Esc`，并设置 `modal`，让菜单栏不再显示"暂停/退出"。
+- `Page.on_leave()` 在每次切换页面时运行。
+
+要支持新的机器人接口，只需继承 `Backend`，实现 `move(vx, vy, wz)`、`stop_move()`，以及处理 `sit`/`stand`/`damp` 的 `action(name)`，
+并提供 `labels` 和 `limits`，然后在 `make_backend()` 中返回它。
 
 ## 界面绘制
 
